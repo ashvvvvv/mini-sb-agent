@@ -115,15 +115,6 @@ func (h *Hook) RemoveAbsent(active map[string]struct{}) {
 	})
 }
 
-type UserMap struct {
-	Inbounds map[string][]UserEntry `json:"inbounds"`
-}
-type UserEntry struct {
-	ID       int    `json:"id"`
-	Password string `json:"password"`
-	Name     string `json:"name,omitempty"`
-}
-
 func minimalContext(parent context.Context) context.Context {
 	inbounds := inbound.NewRegistry()
 	tun.RegisterInbound(inbounds)
@@ -153,17 +144,7 @@ func loadLocalUsers(path string) ([]panelapi.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	var m UserMap
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-	var out []panelapi.User
-	for _, list := range m.Inbounds {
-		for _, u := range list {
-			out = append(out, panelapi.User{ID: u.ID, Password: u.Password, Name: u.Name})
-		}
-	}
-	return out, nil
+	return panelapi.ParseUsers(data)
 }
 
 func collectInbounds(b *box.Box) map[string]adapter.Inbound {
