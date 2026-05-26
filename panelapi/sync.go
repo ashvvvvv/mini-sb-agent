@@ -1,4 +1,4 @@
-package xboard
+package panelapi
 
 import (
 	"context"
@@ -24,7 +24,9 @@ func (s *Syncer) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.flush(ctx)
+			flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			s.flush(flushCtx)
+			cancel()
 			return
 		case <-ticker.C:
 			s.syncOnce(ctx)
@@ -38,7 +40,7 @@ func (s *Syncer) syncOnce(ctx context.Context) {
 	}
 	users, err := s.Panel.FetchUsers(ctx)
 	if err != nil {
-		log.Printf("xboard fetch users: %v", err)
+		log.Printf("panel api fetch users: %v", err)
 	} else if s.Users != nil {
 		if err := s.Users(users); err != nil {
 			log.Printf("apply users: %v", err)
@@ -60,7 +62,7 @@ func (s *Syncer) flush(ctx context.Context) {
 		return
 	}
 	if err := s.Panel.PushTraffic(ctx, flat); err != nil {
-		log.Printf("xboard push traffic: %v", err)
+		log.Printf("panel api push traffic: %v", err)
 		return
 	}
 	s.Commit(delta)

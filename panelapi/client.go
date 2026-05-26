@@ -1,4 +1,4 @@
-package xboard
+package panelapi
 
 import (
 	"bytes"
@@ -34,7 +34,7 @@ func NewClient(baseURL, token, nodeID, nodeType string) *Client {
 
 func (c *Client) endpoint(path string) (string, error) {
 	if c.BaseURL == "" {
-		return "", fmt.Errorf("xboard base url is empty")
+		return "", fmt.Errorf("panel api base url is empty")
 	}
 	u, err := url.Parse(c.BaseURL + path)
 	if err != nil {
@@ -69,7 +69,7 @@ func (c *Client) FetchUsers(ctx context.Context) ([]User, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("xboard user status %s", resp.Status)
+		return nil, fmt.Errorf("panel api user status %s", resp.Status)
 	}
 	var list UserList
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
@@ -115,7 +115,7 @@ func (c *Client) PushTraffic(ctx context.Context, delta map[string][2]int64) err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("xboard push status %s", resp.Status)
+		return fmt.Errorf("panel api push status %s", resp.Status)
 	}
 	return nil
 }

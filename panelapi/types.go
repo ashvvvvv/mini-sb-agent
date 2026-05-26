@@ -1,4 +1,4 @@
-package xboard
+package panelapi
 
 type User struct {
 	ID         int    `json:"id"`
