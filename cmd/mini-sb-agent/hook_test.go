@@ -1,0 +1,20 @@
+package main
+
+import (
+	"testing"
+
+	"mini-sb-agent/xboard"
+)
+
+func TestHookResolvesUserAliasesToNumericID(t *testing.T) {
+	h := &Hook{}
+	h.SetUserAliases([]xboard.User{{ID: 7, UUID: "uuid-7", Password: "pw-7", Name: "name-7"}})
+	for _, in := range []string{"uuid-7", "pw-7", "name-7"} {
+		if got := h.ResolveUser(in); got != "7" {
+			t.Fatalf("ResolveUser(%q)=%q, want 7", in, got)
+		}
+	}
+	if got := h.ResolveUser("8"); got != "8" {
+		t.Fatalf("numeric user should pass through, got %q", got)
+	}
+}
