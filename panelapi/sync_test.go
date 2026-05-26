@@ -1,4 +1,4 @@
-package xboard
+package panelapi
 
 import "testing"
 
@@ -23,6 +23,6 @@ func TestFlattenKeepsNumericUsersAndDropsUUIDUsers(t *testing.T) {
 		t.Fatalf("user 2 delta mismatch: %#v", got["2"])
 	}
 	if _, ok := got["65ef6ea4-e719-497f-9fd1-e1fab9c0384d"]; ok {
-		t.Fatalf("uuid-like user must not be pushed to xboard: %#v", got)
+		t.Fatalf("uuid-like user must not be pushed to panel api: %#v", got)
 	}
 }

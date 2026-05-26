@@ -1,4 +1,4 @@
-package xboard
+package panelapi
 
 import (
 	"context"

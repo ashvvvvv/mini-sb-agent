@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"mini-sb-agent/counter"
-	"mini-sb-agent/xboard"
+	"mini-sb-agent/panelapi"
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
@@ -37,35 +37,14 @@ import (
 
 type Hook struct {
 	byInbound sync.Map
-	userAlias sync.Map
+	users     *UserManager
 }
 
 func (h *Hook) ResolveUser(user string) string {
-	if user == "" {
-		return ""
-	}
-	if v, ok := h.userAlias.Load(user); ok {
-		return v.(string)
+	if h.users != nil {
+		return h.users.Resolve(user)
 	}
 	return user
-}
-
-func (h *Hook) SetUserAliases(users []xboard.User) {
-	for _, u := range users {
-		if u.ID <= 0 {
-			continue
-		}
-		id := fmt.Sprint(u.ID)
-		if u.UUID != "" {
-			h.userAlias.Store(u.UUID, id)
-		}
-		if u.Password != "" {
-			h.userAlias.Store(u.Password, id)
-		}
-		if u.Name != "" {
-			h.userAlias.Store(u.Name, id)
-		}
-	}
 }
 
 func (h *Hook) tc(tag string) *counter.TrafficCounter {
@@ -83,13 +62,25 @@ func (h *Hook) RoutedConnection(ctx context.Context, conn net.Conn, m adapter.In
 	if m.User == "" {
 		return conn
 	}
+	nodeLimiter, userLimiter := h.limiters(m.User)
+	conn = counter.NewRateLimitedConn(conn, nodeLimiter, nodeLimiter)
+	conn = counter.NewRateLimitedConn(conn, userLimiter, userLimiter)
 	return counter.NewConnCounter(conn, h.tc(m.Inbound).GetCounter(h.ResolveUser(m.User)))
 }
 func (h *Hook) RoutedPacketConnection(ctx context.Context, conn N.PacketConn, m adapter.InboundContext, r adapter.Rule, o adapter.Outbound) N.PacketConn {
 	if m.User == "" {
 		return conn
 	}
+	nodeLimiter, userLimiter := h.limiters(m.User)
+	conn = counter.NewRateLimitedPacketConn(conn, nodeLimiter, nodeLimiter)
+	conn = counter.NewRateLimitedPacketConn(conn, userLimiter, userLimiter)
 	return counter.NewPacketConnCounter(conn, h.tc(m.Inbound).GetCounter(h.ResolveUser(m.User)))
+}
+func (h *Hook) limiters(user string) (*counter.RateLimiter, *counter.RateLimiter) {
+	if h.users == nil {
+		return nil, nil
+	}
+	return h.users.Limiters(user)
 }
 func (h *Hook) Snapshot(reset bool) map[string]map[string][2]int64 {
 	out := map[string]map[string][2]int64{}
@@ -154,57 +145,33 @@ func loadOptions(path string) (option.Options, error) {
 	return badjson.UnmarshalExtendedContext[option.Options](ctx, data)
 }
 
-func injectHy2Users(b *box.Box, path string) error {
+func loadLocalUsers(path string) ([]panelapi.User, error) {
 	if path == "" {
-		return nil
+		return nil, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var m UserMap
 	if err := json.Unmarshal(data, &m); err != nil {
-		return err
+		return nil, err
 	}
-	for tag, list := range m.Inbounds {
-		if len(list) == 0 {
-			continue
-		}
-		raw, ok := b.Inbound().Get(tag)
-		if !ok {
-			return fmt.Errorf("inbound %s not found", tag)
-		}
-		in, ok := raw.(*hysteria2.Inbound)
-		if !ok {
-			return fmt.Errorf("inbound %s is not hysteria2", tag)
-		}
-		users := make([]option.Hysteria2User, 0, len(list))
-		ids := make([]int, 0, len(list))
-		seen := map[int]bool{}
+	var out []panelapi.User
+	for _, list := range m.Inbounds {
 		for _, u := range list {
-			if u.ID <= 0 {
-				return fmt.Errorf("inbound %s has invalid user id %d; use >=1", tag, u.ID)
-			}
-			if seen[u.ID] {
-				return fmt.Errorf("inbound %s duplicate user id %d", tag, u.ID)
-			}
-			seen[u.ID] = true
-			if u.Password == "" {
-				return fmt.Errorf("inbound %s user id %d empty password", tag, u.ID)
-			}
-			name := u.Name
-			if name == "" {
-				name = u.Password
-			}
-			users = append(users, option.Hysteria2User{Name: name, Password: u.Password})
-			ids = append(ids, u.ID)
+			out = append(out, panelapi.User{ID: u.ID, Password: u.Password, Name: u.Name})
 		}
-		if err := in.AddUsers(users, ids); err != nil {
-			return err
-		}
-		log.Printf("injected %d hysteria2 users into %s", len(users), tag)
 	}
-	return nil
+	return out, nil
+}
+
+func collectInbounds(b *box.Box) map[string]adapter.Inbound {
+	out := make(map[string]adapter.Inbound)
+	for _, in := range b.Inbound().Inbounds() {
+		out[in.Tag()] = in
+	}
+	return out
 }
 
 func serveStats(ctx context.Context, listen string, h *Hook) error {
@@ -248,11 +215,12 @@ func main() {
 	config := flag.String("config", "config.json", "sing-box config path")
 	api := flag.String("api", "unix:/tmp/mini-sb-agent.sock", "local stats API listen addr; empty disables; supports unix:/path.sock")
 	users := flag.String("users", "", "local neutral user map json for dynamic protocol users")
-	xboardURL := flag.String("xboard-url", "", "Xboard base URL; empty disables panel sync")
-	xboardToken := flag.String("xboard-token", "", "Xboard node token")
-	xboardNodeID := flag.String("xboard-node-id", "", "Xboard node id")
-	xboardNodeType := flag.String("xboard-node-type", "vless", "Xboard node type")
-	xboardEvery := flag.Duration("xboard-every", time.Minute, "Xboard sync interval")
+	panelURL := flag.String("panel-url", "", "Panel API base URL; empty disables panel sync")
+	panelToken := flag.String("panel-token", "", "Panel API node token")
+	panelNodeID := flag.String("panel-node-id", "", "Panel API node id")
+	panelNodeType := flag.String("panel-node-type", "vless", "Panel API node type")
+	panelEvery := flag.Duration("panel-every", time.Minute, "Panel API sync interval")
+	nodeRateMbps := flag.Int("node-rate-mbps", 0, "shared node rate limit in Mbps; 0 disables")
 	flag.Parse()
 
 	runtime.GOMAXPROCS(1)
@@ -270,7 +238,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	h := &Hook{}
+	userManager := NewUserManager(*nodeRateMbps)
+	h := &Hook{users: userManager}
 	b.Router().AppendTracker(h)
 
 	if *api != "" {
@@ -284,35 +253,35 @@ func main() {
 	if err := b.Start(); err != nil {
 		log.Fatal(err)
 	}
-	if err := injectHy2Users(b, *users); err != nil {
-		log.Fatal(err)
+	if *users != "" {
+		localUsers, err := loadLocalUsers(*users)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := userManager.ApplyBox(collectInbounds(b), localUsers); err != nil {
+			log.Fatal(err)
+		}
 	}
 
-	var panel xboard.Panel
-	if *xboardURL != "" {
-		panel = xboard.NewClient(*xboardURL, *xboardToken, *xboardNodeID, *xboardNodeType)
+	var panel panelapi.Panel
+	if *panelURL != "" {
+		panel = panelapi.NewClient(*panelURL, *panelToken, *panelNodeID, *panelNodeType)
 	} else if *users != "" {
-		panel = xboard.LocalUsers{Path: *users}
+		panel = panelapi.LocalUsers{Path: *users}
 	}
 	if panel != nil {
-		syncer := &xboard.Syncer{
+		syncer := &panelapi.Syncer{
 			Panel:    panel,
 			Snapshot: h.SnapshotDelta,
 			Commit:   h.CommitSnapshot,
-			Users: func(list []xboard.User) error {
-				h.SetUserAliases(list)
-				active := make(map[string]struct{}, len(list))
-				for _, u := range list {
-					if u.ID > 0 {
-						active[fmt.Sprint(u.ID)] = struct{}{}
-					}
+			Users: func(list []panelapi.User) error {
+				if err := userManager.ApplyBox(collectInbounds(b), list); err != nil {
+					return err
 				}
-				if len(active) > 0 {
-					h.RemoveAbsent(active)
-				}
+				h.RemoveAbsent(userManager.ActiveIDs())
 				return nil
 			},
-			Every: *xboardEvery,
+			Every: *panelEvery,
 		}
 		go syncer.Run(ctx)
 	}
