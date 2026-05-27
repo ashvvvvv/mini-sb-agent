@@ -65,7 +65,7 @@ func (s *Syncer) flush(ctx context.Context) {
 		log.Printf("panel api push traffic: %v", err)
 		return
 	}
-	s.Commit(delta)
+	s.Commit(commitDelta(delta))
 }
 
 func flatten(in map[string]map[string][2]int64) map[string][2]int64 {
@@ -79,6 +79,22 @@ func flatten(in map[string]map[string][2]int64) map[string][2]int64 {
 			old[0] += v[0]
 			old[1] += v[1]
 			out[user] = old
+		}
+	}
+	return out
+}
+
+func commitDelta(in map[string]map[string][2]int64) map[string]map[string][2]int64 {
+	out := make(map[string]map[string][2]int64)
+	for inbound, users := range in {
+		for user, v := range users {
+			if !isNumericUser(user) {
+				continue
+			}
+			if out[inbound] == nil {
+				out[inbound] = make(map[string][2]int64)
+			}
+			out[inbound][user] = v
 		}
 	}
 	return out
