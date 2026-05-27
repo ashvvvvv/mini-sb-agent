@@ -70,14 +70,24 @@ func (m *UserManager) ApplyBox(inbounds map[string]adapter.Inbound, users []pane
 	var delHy2 []string
 
 	for id, old := range m.users {
-		if nu, ok := next[id]; !ok || !sameUser(old, nu) {
+		nu, ok := next[id]
+		if !ok {
 			if old.UUID != "" {
 				delVless = append(delVless, old.UUID)
 			}
 			if old.Password != "" {
 				delHy2 = append(delHy2, old.Password)
 			}
-			delete(m.limiters, id)
+			m.closeLimiterLocked(id)
+			continue
+		}
+		if old.UUID != nu.UUID || old.Password != nu.Password || old.Name != nu.Name {
+			if old.UUID != "" {
+				delVless = append(delVless, old.UUID)
+			}
+			if old.Password != "" {
+				delHy2 = append(delHy2, old.Password)
+			}
 		}
 	}
 	for id, nu := range next {
@@ -134,7 +144,7 @@ func (m *UserManager) ApplyBox(inbounds map[string]adapter.Inbound, users []pane
 
 func (m *UserManager) updateLimiterLocked(u panelapi.User) {
 	if !userRateLimitBuildEnabled || u.SpeedLimit <= 0 {
-		delete(m.limiters, u.ID)
+		m.closeLimiterLocked(u.ID)
 		return
 	}
 	bytesPerSecond := mbpsToBytes(u.SpeedLimit)
@@ -143,6 +153,13 @@ func (m *UserManager) updateLimiterLocked(u panelapi.User) {
 		return
 	}
 	m.limiters[u.ID] = counter.NewRateLimiter(bytesPerSecond)
+}
+
+func (m *UserManager) closeLimiterLocked(id int) {
+	if l, ok := m.limiters[id]; ok {
+		l.Close()
+		delete(m.limiters, id)
+	}
 }
 
 func (m *UserManager) Resolve(user string) string {

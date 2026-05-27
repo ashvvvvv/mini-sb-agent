@@ -1,6 +1,7 @@
 package counter
 
 import (
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -22,6 +23,7 @@ type RateLimiter struct {
 	tokens   float64
 	last     time.Time
 	disabled bool
+	closed   bool
 }
 
 func NewRateLimiter(bytesPerSecond int64) *RateLimiter {
@@ -40,11 +42,34 @@ func (l *RateLimiter) SetRate(bytesPerSecond int64) {
 		l.tokens = 0
 		return
 	}
+	l.closed = false
 	l.disabled = false
 	if l.tokens <= 0 || l.tokens > float64(l.burst) {
 		l.tokens = float64(l.burst)
 	}
 	l.last = time.Now()
+}
+
+func (l *RateLimiter) Close() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.closed = true
+	l.disabled = true
+	l.rate = 0
+	l.burst = 0
+	l.tokens = 0
+}
+
+func (l *RateLimiter) Closed() bool {
+	if l == nil {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closed
 }
 
 func (l *RateLimiter) Rate() int64 {
@@ -53,26 +78,35 @@ func (l *RateLimiter) Rate() int64 {
 	return l.rate
 }
 
-func (l *RateLimiter) Wait(n int) {
+func (l *RateLimiter) Wait(n int) error {
 	if l == nil || n <= 0 {
-		return
+		return nil
 	}
 	remaining := n
 	for remaining > 0 {
-		wait := l.reserve(remaining)
+		wait, err := l.reserve(remaining)
+		if err != nil {
+			return err
+		}
 		if wait <= 0 {
-			return
+			return nil
 		}
 		time.Sleep(wait)
 		remaining = 0
 	}
+	return nil
 }
 
-func (l *RateLimiter) reserve(n int) time.Duration {
+var ErrLimiterClosed = errors.New("rate limiter closed")
+
+func (l *RateLimiter) reserve(n int) (time.Duration, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return 0, ErrLimiterClosed
+	}
 	if l.disabled || l.rate <= 0 || n <= 0 {
-		return 0
+		return 0, nil
 	}
 	now := time.Now()
 	if l.last.IsZero() {
@@ -92,11 +126,11 @@ func (l *RateLimiter) reserve(n int) time.Duration {
 	}
 	if l.tokens >= need {
 		l.tokens -= need
-		return 0
+		return 0, nil
 	}
 	missing := need - l.tokens
 	l.tokens = 0
-	return time.Duration(missing / float64(l.rate) * float64(time.Second))
+	return time.Duration(missing / float64(l.rate) * float64(time.Second)), nil
 }
 
 type RateLimitedConn struct {
@@ -115,7 +149,9 @@ func NewRateLimitedConn(conn net.Conn, readLimiter, writeLimiter *RateLimiter) n
 func (c *RateLimitedConn) Read(b []byte) (int, error) {
 	n, err := c.ExtendedConn.Read(b)
 	if n > 0 && c.readLimiter != nil {
-		c.readLimiter.Wait(n)
+		if waitErr := c.readLimiter.Wait(n); waitErr != nil && err == nil {
+			err = waitErr
+		}
 	}
 	return n, err
 }
@@ -123,7 +159,9 @@ func (c *RateLimitedConn) Read(b []byte) (int, error) {
 func (c *RateLimitedConn) Write(b []byte) (int, error) {
 	n, err := c.ExtendedConn.Write(b)
 	if n > 0 && c.writeLimiter != nil {
-		c.writeLimiter.Wait(n)
+		if waitErr := c.writeLimiter.Wait(n); waitErr != nil && err == nil {
+			err = waitErr
+		}
 	}
 	return n, err
 }
@@ -131,7 +169,7 @@ func (c *RateLimitedConn) Write(b []byte) (int, error) {
 func (c *RateLimitedConn) ReadBuffer(buffer *buf.Buffer) error {
 	err := c.ExtendedConn.ReadBuffer(buffer)
 	if err == nil && buffer.Len() > 0 && c.readLimiter != nil {
-		c.readLimiter.Wait(buffer.Len())
+		err = c.readLimiter.Wait(buffer.Len())
 	}
 	return err
 }
@@ -140,7 +178,7 @@ func (c *RateLimitedConn) WriteBuffer(buffer *buf.Buffer) error {
 	n := buffer.Len()
 	err := c.ExtendedConn.WriteBuffer(buffer)
 	if err == nil && n > 0 && c.writeLimiter != nil {
-		c.writeLimiter.Wait(n)
+		err = c.writeLimiter.Wait(n)
 	}
 	return err
 }
@@ -163,7 +201,7 @@ func NewRateLimitedPacketConn(conn N.PacketConn, readLimiter, writeLimiter *Rate
 func (p *RateLimitedPacketConn) ReadPacket(buff *buf.Buffer) (M.Socksaddr, error) {
 	dest, err := p.PacketConn.ReadPacket(buff)
 	if err == nil && buff.Len() > 0 && p.readLimiter != nil {
-		p.readLimiter.Wait(buff.Len())
+		err = p.readLimiter.Wait(buff.Len())
 	}
 	return dest, err
 }
@@ -172,7 +210,7 @@ func (p *RateLimitedPacketConn) WritePacket(buff *buf.Buffer, dest M.Socksaddr) 
 	n := buff.Len()
 	err := p.PacketConn.WritePacket(buff, dest)
 	if err == nil && n > 0 && p.writeLimiter != nil {
-		p.writeLimiter.Wait(n)
+		err = p.writeLimiter.Wait(n)
 	}
 	return err
 }

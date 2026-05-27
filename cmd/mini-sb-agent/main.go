@@ -63,18 +63,20 @@ func (h *Hook) RoutedConnection(ctx context.Context, conn net.Conn, m adapter.In
 		return conn
 	}
 	nodeLimiter, userLimiter := h.limiters(m.User)
+	conn = counter.NewConnCounter(conn, h.tc(m.Inbound).GetCounter(h.ResolveUser(m.User)))
 	conn = counter.NewRateLimitedConn(conn, nodeLimiter, nodeLimiter)
 	conn = counter.NewRateLimitedConn(conn, userLimiter, userLimiter)
-	return counter.NewConnCounter(conn, h.tc(m.Inbound).GetCounter(h.ResolveUser(m.User)))
+	return conn
 }
 func (h *Hook) RoutedPacketConnection(ctx context.Context, conn N.PacketConn, m adapter.InboundContext, r adapter.Rule, o adapter.Outbound) N.PacketConn {
 	if m.User == "" {
 		return conn
 	}
 	nodeLimiter, userLimiter := h.limiters(m.User)
+	conn = counter.NewPacketConnCounter(conn, h.tc(m.Inbound).GetCounter(h.ResolveUser(m.User)))
 	conn = counter.NewRateLimitedPacketConn(conn, nodeLimiter, nodeLimiter)
 	conn = counter.NewRateLimitedPacketConn(conn, userLimiter, userLimiter)
-	return counter.NewPacketConnCounter(conn, h.tc(m.Inbound).GetCounter(h.ResolveUser(m.User)))
+	return conn
 }
 func (h *Hook) limiters(user string) (*counter.RateLimiter, *counter.RateLimiter) {
 	if h.users == nil {
