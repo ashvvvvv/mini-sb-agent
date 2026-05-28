@@ -13,24 +13,51 @@ import (
 	"github.com/sagernet/sing-box/protocol/vless"
 )
 
+// limiterPair holds separate read (rx) and write (tx) rate limiters so that
+// upstream and downstream traffic do not compete for the same token bucket.
+// This prevents ACK / control-packet starvation: a saturated download no
+// longer blocks the upload direction (and vice versa).
+type limiterPair struct {
+	rx *counter.RateLimiter // applied on the Read / ReadPacket path
+	tx *counter.RateLimiter // applied on the Write / WritePacket path
+}
+
+func newLimiterPair(bytesPerSecond int64) limiterPair {
+	return limiterPair{
+		rx: counter.NewRateLimiter(bytesPerSecond),
+		tx: counter.NewRateLimiter(bytesPerSecond),
+	}
+}
+
+func (p limiterPair) SetRate(bytesPerSecond int64) {
+	p.rx.SetRate(bytesPerSecond)
+	p.tx.SetRate(bytesPerSecond)
+}
+
+func (p limiterPair) Close() {
+	p.rx.Close()
+	p.tx.Close()
+}
+
 type UserManager struct {
 	mu        sync.Mutex
 	users     map[int]panelapi.User
 	bySecret  map[string]int
-	nodeLimit *counter.RateLimiter
-	limiters  map[int]*counter.RateLimiter
+	nodeLimit *limiterPair
+	limiters  map[int]*limiterPair
 }
 
 func NewUserManager(nodeMbps int) *UserManager {
-	var nodeLimiter *counter.RateLimiter
+	var nodeLim *limiterPair
 	if nodeMbps > 0 {
-		nodeLimiter = counter.NewRateLimiter(mbpsToBytes(nodeMbps))
+		p := newLimiterPair(mbpsToBytes(nodeMbps))
+		nodeLim = &p
 	}
 	return &UserManager{
 		users:     make(map[int]panelapi.User),
 		bySecret:  make(map[string]int),
-		nodeLimit: nodeLimiter,
-		limiters:  make(map[int]*counter.RateLimiter),
+		nodeLimit: nodeLim,
+		limiters:  make(map[int]*limiterPair),
 	}
 }
 
@@ -156,7 +183,8 @@ func (m *UserManager) updateLimiterLocked(u panelapi.User) {
 		l.SetRate(bytesPerSecond)
 		return
 	}
-	m.limiters[u.ID] = counter.NewRateLimiter(bytesPerSecond)
+	p := newLimiterPair(bytesPerSecond)
+	m.limiters[u.ID] = &p
 }
 
 func (m *UserManager) closeLimiterLocked(id int) {
@@ -188,14 +216,42 @@ func (m *UserManager) ActiveIDs() map[string]struct{} {
 	return out
 }
 
+// DirectionalLimiters returns separate read and write limiters for both the
+// node level and the per-user level. Each direction gets its own token bucket
+// so that saturated download traffic cannot starve upload ACKs (or vice versa).
+func (m *UserManager) DirectionalLimiters(user string) (nodeRead, nodeWrite, userRead, userWrite *counter.RateLimiter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.nodeLimit != nil {
+		nodeRead = m.nodeLimit.rx
+		nodeWrite = m.nodeLimit.tx
+	}
+	if userRateLimitBuildEnabled {
+		if id, ok := m.bySecret[user]; ok {
+			if p := m.limiters[id]; p != nil {
+				userRead = p.rx
+				userWrite = p.tx
+			}
+		}
+	}
+	return
+}
+
+// Limiters returns a representative limiter for inspection / testing.
+// Deprecated: prefer DirectionalLimiters for connection wiring.
 func (m *UserManager) Limiters(user string) (*counter.RateLimiter, *counter.RateLimiter) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var userLimiter *counter.RateLimiter
+	var nodeLim, userLim *counter.RateLimiter
+	if m.nodeLimit != nil {
+		nodeLim = m.nodeLimit.rx
+	}
 	if userRateLimitBuildEnabled {
 		if id, ok := m.bySecret[user]; ok {
-			userLimiter = m.limiters[id]
+			if p := m.limiters[id]; p != nil {
+				userLim = p.rx
+			}
 		}
 	}
-	return m.nodeLimit, userLimiter
+	return nodeLim, userLim
 }

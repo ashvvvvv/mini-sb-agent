@@ -66,27 +66,27 @@ func (h *Hook) RoutedConnection(ctx context.Context, conn net.Conn, m adapter.In
 	if m.User == "" {
 		return conn
 	}
-	nodeLimiter, userLimiter := h.limiters(m.User)
+	nodeRead, nodeWrite, userRead, userWrite := h.directionalLimiters(m.User)
 	conn = counter.NewConnCounter(conn, h.tc(m.Inbound).GetCounter(h.ResolveUser(m.User)))
-	conn = counter.NewRateLimitedConn(conn, nodeLimiter, nodeLimiter)
-	conn = counter.NewRateLimitedConn(conn, userLimiter, userLimiter)
+	conn = counter.NewRateLimitedConn(conn, nodeRead, nodeWrite)
+	conn = counter.NewRateLimitedConn(conn, userRead, userWrite)
 	return conn
 }
 func (h *Hook) RoutedPacketConnection(ctx context.Context, conn N.PacketConn, m adapter.InboundContext, r adapter.Rule, o adapter.Outbound) N.PacketConn {
 	if m.User == "" {
 		return conn
 	}
-	nodeLimiter, userLimiter := h.limiters(m.User)
+	nodeRead, nodeWrite, userRead, userWrite := h.directionalLimiters(m.User)
 	conn = counter.NewPacketConnCounter(conn, h.tc(m.Inbound).GetCounter(h.ResolveUser(m.User)))
-	conn = counter.NewRateLimitedPacketConn(conn, nodeLimiter, nodeLimiter)
-	conn = counter.NewRateLimitedPacketConn(conn, userLimiter, userLimiter)
+	conn = counter.NewRateLimitedPacketConn(conn, nodeRead, nodeWrite)
+	conn = counter.NewRateLimitedPacketConn(conn, userRead, userWrite)
 	return conn
 }
-func (h *Hook) limiters(user string) (*counter.RateLimiter, *counter.RateLimiter) {
+func (h *Hook) directionalLimiters(user string) (nodeRead, nodeWrite, userRead, userWrite *counter.RateLimiter) {
 	if h.users == nil {
-		return nil, nil
+		return nil, nil, nil, nil
 	}
-	return h.users.Limiters(user)
+	return h.users.DirectionalLimiters(user)
 }
 func (h *Hook) Snapshot(reset bool) map[string]map[string][2]int64 {
 	out := map[string]map[string][2]int64{}
