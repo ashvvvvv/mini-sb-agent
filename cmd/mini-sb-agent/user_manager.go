@@ -45,6 +45,10 @@ func sameUser(a, b panelapi.User) bool {
 	return a.ID == b.ID && a.UUID == b.UUID && a.Password == b.Password && a.Name == b.Name && a.SpeedLimit == b.SpeedLimit
 }
 
+func vlessUserFromPanelUser(u panelapi.User) option.VLESSUser {
+	return option.VLESSUser{Name: u.UUID, UUID: u.UUID, Flow: "xtls-rprx-vision"}
+}
+
 func (m *UserManager) ApplyBox(inbounds map[string]adapter.Inbound, users []panelapi.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -97,7 +101,7 @@ func (m *UserManager) ApplyBox(inbounds map[string]adapter.Inbound, users []pane
 			continue
 		}
 		if nu.UUID != "" {
-			addVless = append(addVless, option.VLESSUser{Name: nu.UUID, UUID: nu.UUID})
+			addVless = append(addVless, vlessUserFromPanelUser(nu))
 		}
 		if nu.Password != "" {
 			name := nu.Name
