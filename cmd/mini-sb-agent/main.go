@@ -218,6 +218,8 @@ func main() {
 	panelNodeType := flag.String("panel-node-type", "vless", "Panel API node type")
 	panelEvery := flag.Duration("panel-every", time.Minute, "Panel API sync interval")
 	nodeRateMbps := flag.Int("node-rate-mbps", 0, "shared node rate limit in Mbps; 0 disables")
+	debugRuntimeLog := flag.String("debug-runtime-log", "", "optional CSV path for runtime/cgroup diagnostics")
+	debugRuntimeEvery := flag.Duration("debug-runtime-every", time.Second, "runtime diagnostics sampling interval")
 	flag.Parse()
 
 	runtime.GOMAXPROCS(1)
@@ -225,6 +227,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if err := startRuntimeDebugLogger(ctx, *debugRuntimeLog, *debugRuntimeEvery); err != nil {
+		log.Fatal(err)
+	}
 
 	opts, err := loadOptions(*config)
 	if err != nil {
