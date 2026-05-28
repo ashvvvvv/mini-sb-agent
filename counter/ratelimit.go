@@ -119,6 +119,52 @@ func (l *RateLimiter) Wait(n int) error {
 
 var ErrLimiterClosed = errors.New("rate limiter closed")
 
+// Allow reports whether n bytes can pass immediately. Unlike Wait, it never
+// sleeps. Packet-based protocols such as QUIC/Hysteria2 run their own pacing,
+// ACK, and congestion-control loops above the UDP socket; blocking the packet
+// read/write path with time.Sleep can stall those loops and cause severe
+// throughput oscillation. Allow is therefore used only by PacketConn wrappers
+// to make a fast pass/drop decision while still charging accepted bytes to the
+// shared limiter bucket.
+func (l *RateLimiter) Allow(n int) (bool, error) {
+	if l == nil || n <= 0 {
+		return true, nil
+	}
+	return l.allow(n)
+}
+
+func (l *RateLimiter) allow(n int) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return false, ErrLimiterClosed
+	}
+	if l.disabled || l.rate <= 0 || n <= 0 {
+		return true, nil
+	}
+	now := time.Now()
+	if l.last.IsZero() {
+		l.last = now
+	}
+	elapsed := now.Sub(l.last).Seconds()
+	if elapsed > 0 {
+		l.tokens += elapsed * float64(l.rate)
+		if l.tokens > float64(l.burst) {
+			l.tokens = float64(l.burst)
+		}
+		l.last = now
+	}
+	need := float64(n)
+	if need > float64(l.burst) {
+		need = float64(l.burst)
+	}
+	if l.tokens < need {
+		return false, nil
+	}
+	l.tokens -= need
+	return true, nil
+}
+
 func (l *RateLimiter) reserve(n int) (time.Duration, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -254,15 +300,24 @@ func NewRateLimitedPacketConn(conn N.PacketConn, readLimiter, writeLimiter *Rate
 func (p *RateLimitedPacketConn) ReadPacket(buff *buf.Buffer) (M.Socksaddr, error) {
 	dest, err := p.PacketConn.ReadPacket(buff)
 	if err == nil && buff.Len() > 0 && p.readLimiter != nil {
-		err = p.readLimiter.Wait(buff.Len())
+		allowed, waitErr := p.readLimiter.Allow(buff.Len())
+		if waitErr != nil {
+			err = waitErr
+		} else if !allowed {
+			buff.Reset()
+		}
 	}
 	return dest, err
 }
 
 func (p *RateLimitedPacketConn) WritePacket(buff *buf.Buffer, dest M.Socksaddr) error {
 	if buff.Len() > 0 && p.writeLimiter != nil {
-		if err := p.writeLimiter.Wait(buff.Len()); err != nil {
+		allowed, err := p.writeLimiter.Allow(buff.Len())
+		if err != nil {
 			return err
+		}
+		if !allowed {
+			return nil
 		}
 	}
 	return p.PacketConn.WritePacket(buff, dest)
