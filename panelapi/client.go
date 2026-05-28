@@ -75,10 +75,23 @@ func (c *Client) FetchUsers(ctx context.Context) ([]User, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		return nil, err
 	}
-	if len(list.Users) > 0 {
-		return list.Users, nil
+	users := list.Users
+	if len(users) == 0 {
+		users = list.Data
 	}
-	return list.Data, nil
+	for i := range users {
+		// Xboard's UniProxy user endpoint returns id/uuid/speed_limit only for
+		// vless-like nodes. For HY2 in this lightweight agent, use the same UUID
+		// as the Hysteria2 password so one panel user can authenticate on both
+		// VLESS Reality and HY2 and still bill to the numeric user id.
+		if users[i].Password == "" {
+			users[i].Password = users[i].UUID
+		}
+		if users[i].Name == "" {
+			users[i].Name = strconv.Itoa(users[i].ID)
+		}
+	}
+	return users, nil
 }
 
 func (c *Client) PushTraffic(ctx context.Context, delta map[string][2]int64) error {
