@@ -34,3 +34,22 @@ Operationally this means:
 - a user's VLESS UUID is also their HY2 password by default;
 - VLESS and HY2 traffic can be billed back to the same numeric panel user ID;
 - administrators should treat enabling both inbounds on a node as dual-protocol access for the same user set.
+
+## Hysteria2 bandwidth and per-user limits
+
+Hysteria2/QUIC should use sing-box's native Hysteria2 bandwidth controls for the node-wide Brutal bandwidth advertisement instead of sleeping in the UDP packet path. mini-sb-agent exposes optional CLI overrides for Hysteria2 inbounds:
+
+```text
+-hy2-up-mbps <mbps>
+-hy2-down-mbps <mbps>
+-hy2-ignore-client-bandwidth
+```
+
+Use these values for the node target capacity, not for an individual user's panel speed limit. For example, a node that should provide up to 500 Mbps overall should advertise `-hy2-up-mbps 500 -hy2-down-mbps 500`, while a panel user with `speed_limit=200` is still expected to be capped near 200 Mbps by mini-sb-agent's per-user limiter.
+
+Operational milestone from the Germany LXC test node:
+
+- Before handing node-wide HY2 bandwidth control back to sing-box/Hysteria2, Speedtest download stalls were certain or high-probability on HY2.
+- With sing-box-layer HY2 bandwidth overrides and client bandwidth ignored, HY2 download stalls dropped to low-probability/occasional during repeated tests.
+- The observed upload tail burst above the tested cap became rare. In that test round the active user had `speed_limit=200`, so it was not a 300 Mbps node-limit validation.
+- The feature goal is HY2 parity/completeness for the agent: node-wide target capacity such as 500 Mbps should be advertised through HY2, while panel per-user limits remain enforced separately.
