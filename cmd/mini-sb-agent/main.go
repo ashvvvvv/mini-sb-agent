@@ -26,10 +26,14 @@ import (
 	"github.com/sagernet/sing-box/adapter/outbound"
 	"github.com/sagernet/sing-box/adapter/service"
 	"github.com/sagernet/sing-box/dns"
+	dnsTransport "github.com/sagernet/sing-box/dns/transport"
+	dnsHosts "github.com/sagernet/sing-box/dns/transport/hosts"
+	dnsLocal "github.com/sagernet/sing-box/dns/transport/local"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/protocol/block"
 	"github.com/sagernet/sing-box/protocol/direct"
+	outboundDNS "github.com/sagernet/sing-box/protocol/dns"
 	"github.com/sagernet/sing-box/protocol/hysteria2"
-	"github.com/sagernet/sing-box/protocol/tun"
 	"github.com/sagernet/sing-box/protocol/vless"
 	badjson "github.com/sagernet/sing/common/json"
 	N "github.com/sagernet/sing/common/network"
@@ -119,14 +123,24 @@ func (h *Hook) RemoveAbsent(active map[string]struct{}) {
 
 func minimalContext(parent context.Context) context.Context {
 	inbounds := inbound.NewRegistry()
-	tun.RegisterInbound(inbounds)
 	vless.RegisterInbound(inbounds)
 	hysteria2.RegisterInbound(inbounds)
+	registerOptionalInbounds(inbounds)
 
 	outbounds := outbound.NewRegistry()
 	direct.RegisterOutbound(outbounds)
+	block.RegisterOutbound(outbounds)
+	outboundDNS.RegisterOutbound(outbounds)
 
-	return box.Context(parent, inbounds, outbounds, endpoint.NewRegistry(), dns.NewTransportRegistry(), service.NewRegistry())
+	dnsTransports := dns.NewTransportRegistry()
+	dnsTransport.RegisterUDP(dnsTransports)
+	dnsTransport.RegisterTCP(dnsTransports)
+	dnsTransport.RegisterTLS(dnsTransports)
+	dnsTransport.RegisterHTTPS(dnsTransports)
+	dnsLocal.RegisterTransport(dnsTransports)
+	dnsHosts.RegisterTransport(dnsTransports)
+
+	return box.Context(parent, inbounds, outbounds, endpoint.NewRegistry(), dnsTransports, service.NewRegistry())
 }
 
 func loadOptions(path string) (option.Options, error) {
