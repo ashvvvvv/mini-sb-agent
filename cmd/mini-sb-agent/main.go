@@ -143,13 +143,57 @@ func minimalContext(parent context.Context) context.Context {
 	return box.Context(parent, inbounds, outbounds, endpoint.NewRegistry(), dnsTransports, service.NewRegistry())
 }
 
+type hy2Tuning struct {
+	Enabled               bool
+	UpMbps                int
+	DownMbps              int
+	IgnoreClientBandwidth bool
+	BrutalDebug           bool
+}
+
 func loadOptions(path string) (option.Options, error) {
+	return loadOptionsWithHY2Tuning(path, hy2Tuning{})
+}
+
+func loadOptionsWithHY2Tuning(path string, tuning hy2Tuning) (option.Options, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return option.Options{}, err
 	}
 	ctx := minimalContext(context.Background())
-	return badjson.UnmarshalExtendedContext[option.Options](ctx, data)
+	opts, err := badjson.UnmarshalExtendedContext[option.Options](ctx, data)
+	if err != nil {
+		return option.Options{}, err
+	}
+	applyHY2Tuning(&opts, tuning)
+	return opts, nil
+}
+
+func applyHY2Tuning(opts *option.Options, tuning hy2Tuning) {
+	if opts == nil || !tuning.Enabled {
+		return
+	}
+	for i := range opts.Inbounds {
+		if opts.Inbounds[i].Type != "hysteria2" {
+			continue
+		}
+		hy2, ok := opts.Inbounds[i].Options.(*option.Hysteria2InboundOptions)
+		if !ok || hy2 == nil {
+			continue
+		}
+		if tuning.UpMbps > 0 {
+			hy2.UpMbps = tuning.UpMbps
+		}
+		if tuning.DownMbps > 0 {
+			hy2.DownMbps = tuning.DownMbps
+		}
+		if tuning.IgnoreClientBandwidth {
+			hy2.IgnoreClientBandwidth = true
+		}
+		if tuning.BrutalDebug {
+			hy2.BrutalDebug = true
+		}
+	}
 }
 
 func loadLocalUsers(path string) ([]panelapi.User, error) {
@@ -218,6 +262,10 @@ func main() {
 	panelNodeType := flag.String("panel-node-type", "vless", "Panel API node type")
 	panelEvery := flag.Duration("panel-every", time.Minute, "Panel API sync interval")
 	nodeRateMbps := flag.Int("node-rate-mbps", 0, "shared node rate limit in Mbps; 0 disables")
+	hy2UpMbps := flag.Int("hy2-up-mbps", 0, "Hysteria2 inbound advertised upload bandwidth in Mbps; 0 keeps config value")
+	hy2DownMbps := flag.Int("hy2-down-mbps", 0, "Hysteria2 inbound advertised download bandwidth in Mbps; 0 keeps config value")
+	hy2IgnoreClientBandwidth := flag.Bool("hy2-ignore-client-bandwidth", false, "force Hysteria2 server bandwidth settings instead of client-advertised bandwidth")
+	hy2BrutalDebug := flag.Bool("hy2-brutal-debug", false, "enable Hysteria2 Brutal congestion debug logging")
 	debugRuntimeLog := flag.String("debug-runtime-log", "", "optional CSV path for runtime/cgroup diagnostics")
 	debugRuntimeEvery := flag.Duration("debug-runtime-every", time.Second, "runtime diagnostics sampling interval")
 	flag.Parse()
@@ -231,7 +279,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	opts, err := loadOptions(*config)
+	hy2TuningEnabled := *hy2UpMbps > 0 || *hy2DownMbps > 0 || *hy2IgnoreClientBandwidth || *hy2BrutalDebug
+	opts, err := loadOptionsWithHY2Tuning(*config, hy2Tuning{
+		Enabled:               hy2TuningEnabled,
+		UpMbps:                *hy2UpMbps,
+		DownMbps:              *hy2DownMbps,
+		IgnoreClientBandwidth: *hy2IgnoreClientBandwidth,
+		BrutalDebug:           *hy2BrutalDebug,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
