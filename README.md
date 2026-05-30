@@ -13,6 +13,23 @@ The default build intentionally keeps the runtime protocol surface small:
 
 General-purpose proxy protocols such as VMess, Trojan, Shadowsocks, SOCKS, HTTP, and mixed inbound are intentionally not registered in the default node build.
 
+## Logging
+
+The default log level is **warn**. If config.json omits the `log` block or leaves `level` empty, mini-sb-agent automatically sets it to `warn` to avoid TRACE/DEBUG/INFO spam on low-memory nodes.
+
+To override, add a `log` section to config.json:
+
+```json
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  }
+}
+```
+
+Supported levels (sing-box standard): `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`.
+
 ## VLESS Reality/Vision users
 
 Panel VLESS users are installed into sing-box with:

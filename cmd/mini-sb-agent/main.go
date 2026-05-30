@@ -165,6 +165,13 @@ func loadOptionsWithHY2Tuning(path string, tuning hy2Tuning) (option.Options, er
 	if err != nil {
 		return option.Options{}, err
 	}
+	// Default log level to "warn" to avoid TRACE/DEBUG/INFO spam on
+	// low-memory nodes.  Operators can still override via config.json.
+	if opts.Log == nil {
+		opts.Log = &option.LogOptions{Level: "warn", Timestamp: true}
+	} else if opts.Log.Level == "" {
+		opts.Log.Level = "warn"
+	}
 	applyHY2Tuning(&opts, tuning)
 	return opts, nil
 }
