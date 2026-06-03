@@ -260,6 +260,10 @@ func serveStats(ctx context.Context, listen string, h *Hook) error {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "xboard-generate-config" {
+		os.Exit(runXboardGenerateConfig(os.Args[2:]))
+	}
+
 	config := flag.String("config", "config.json", "sing-box config path")
 	api := flag.String("api", "unix:/tmp/mini-sb-agent.sock", "local stats API listen addr; empty disables; supports unix:/path.sock")
 	users := flag.String("users", "", "local neutral user map json for dynamic protocol users")
