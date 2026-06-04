@@ -33,7 +33,7 @@ func (m MultiPanel) FetchUsers(ctx context.Context) ([]User, error) {
 	return merged, nil
 }
 
-func (m MultiPanel) PushTraffic(ctx context.Context, delta map[string][2]int64) error {
+func (m MultiPanel) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error {
 	for _, panel := range m.Panels {
 		if panel == nil {
 			continue

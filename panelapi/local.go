@@ -45,11 +45,11 @@ func (l LocalUsers) FetchUsers(ctx context.Context) ([]User, error) {
 	return ParseUsers(data)
 }
 
-func (l LocalUsers) PushTraffic(ctx context.Context, delta map[string][2]int64) error {
+func (l LocalUsers) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error {
 	return nil
 }
 
 type Panel interface {
 	FetchUsers(ctx context.Context) ([]User, error)
-	PushTraffic(ctx context.Context, delta map[string][2]int64) error
+	PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error
 }

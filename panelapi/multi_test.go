@@ -19,7 +19,7 @@ func (f *fakePanel) FetchUsers(ctx context.Context) ([]User, error) {
 	return f.users, nil
 }
 
-func (f *fakePanel) PushTraffic(ctx context.Context, delta map[string][2]int64) error {
+func (f *fakePanel) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error {
 	f.push++
 	return f.err
 }
@@ -42,7 +42,7 @@ func TestMultiPanelPushesTrafficToAllPanels(t *testing.T) {
 	a := &fakePanel{}
 	b := &fakePanel{}
 	panel := MultiPanel{Panels: []Panel{a, b}}
-	if err := panel.PushTraffic(context.Background(), map[string][2]int64{"1": {1, 2}}); err != nil {
+	if err := panel.PushTraffic(context.Background(), map[string]map[string][2]int64{"vless-in": {"1": {1, 2}}}); err != nil {
 		t.Fatalf("PushTraffic: %v", err)
 	}
 	if a.push != 1 || b.push != 1 {

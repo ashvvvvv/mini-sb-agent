@@ -94,16 +94,42 @@ func (c *Client) FetchUsers(ctx context.Context) ([]User, error) {
 	return users, nil
 }
 
-func (c *Client) PushTraffic(ctx context.Context, delta map[string][2]int64) error {
-	if len(delta) == 0 {
+func (c *Client) matchesInbound(tag string) bool {
+	switch strings.ToLower(c.NodeType) {
+	case "vless", "vless-reality", "reality":
+		return tag == "vless-in"
+	case "hy2", "hysteria", "hysteria2":
+		return tag == "hy2-in"
+	default:
+		return strings.Contains(strings.ToLower(tag), strings.ToLower(c.NodeType))
+	}
+}
+
+func (c *Client) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error {
+	flat := make(map[string][2]int64)
+	for tag, users := range delta {
+		if !c.matchesInbound(tag) {
+			continue
+		}
+		for user, d := range users {
+			if !isNumericUser(user) {
+				continue
+			}
+			old := flat[user]
+			old[0] += d[0]
+			old[1] += d[1]
+			flat[user] = old
+		}
+	}
+	if len(flat) == 0 {
 		return nil
 	}
 	ep, err := c.endpoint("/api/v1/server/UniProxy/push")
 	if err != nil {
 		return err
 	}
-	payload := make(PushRequest, len(delta))
-	for user, d := range delta {
+	payload := make(PushRequest, len(flat))
+	for user, d := range flat {
 		uid, err := strconv.Atoi(user)
 		if err != nil {
 			continue

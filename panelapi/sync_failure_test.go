@@ -18,7 +18,7 @@ func (p *syncTestPanel) FetchUsers(ctx context.Context) ([]User, error) {
 	return p.users, nil
 }
 
-func (p *syncTestPanel) PushTraffic(ctx context.Context, delta map[string][2]int64) error {
+func (p *syncTestPanel) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error {
 	p.pushes++
 	return p.pushErr
 }

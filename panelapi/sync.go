@@ -57,11 +57,22 @@ func (s *Syncer) flush(ctx context.Context) {
 	if len(delta) == 0 {
 		return
 	}
-	flat := flatten(delta)
-	if len(flat) == 0 {
+	hasTraffic := false
+	for _, users := range delta {
+		for user := range users {
+			if isNumericUser(user) {
+				hasTraffic = true
+				break
+			}
+		}
+		if hasTraffic {
+			break
+		}
+	}
+	if !hasTraffic {
 		return
 	}
-	if err := s.Panel.PushTraffic(ctx, flat); err != nil {
+	if err := s.Panel.PushTraffic(ctx, delta); err != nil {
 		log.Printf("panel api push traffic: %v", err)
 		return
 	}
