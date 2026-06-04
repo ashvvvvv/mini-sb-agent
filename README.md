@@ -103,7 +103,8 @@ go build -tags tun -o mini-sb-agent ./cmd/mini-sb-agent
 在您的 Alpine 小鸡上运行以下命令，按提示输入配置信息即可：
 
 ```bash
-curl -fsSL [https://raw.githubusercontent.com/ashvvvvv/mini-sb-agent/master/install.sh](https://raw.githubusercontent.com/ashvvvvv/mini-sb-agent/master/install.sh) | sh
+curl -fsSL https://raw.githubusercontent.com/ashvvvvv/mini-sb-agent/master/install.sh | sh
+
 ```
 
 ---
