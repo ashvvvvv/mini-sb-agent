@@ -113,7 +113,7 @@ curl -fsSL https://raw.githubusercontent.com/ashvvvvv/mini-sb-agent/master/insta
 
 ---
 
-## NAT 小鸡 TCP 缓冲区调参指南
+## NAT 小鸡 TCP 缓冲区调参指南（建议至少lxc容器nat,pod容器无权限修改缓冲区）
 
 在大并发连接下（如多线程测速或高速下载），爆内存的罪魁祸首通常是 **TCP 读写缓冲区 (Socket Buffer)**。按 BDP（带宽时延积）公式计算的缓冲区对于小内存机器来说过于庞大且不符合实际使用情况。建议直接将最大缓冲区限制压低，在损失极少吞吐的前提下保证机器绝对不爆内存（建议小于 5MB）。
 
