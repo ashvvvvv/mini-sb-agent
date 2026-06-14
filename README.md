@@ -10,14 +10,15 @@
 
 在 128MB 甚至 256MB 内存的 NAT 服务器上使用传统客户端（如 V2bX、原版singbox）时，常会遇到以下痛点：
 1. **进程开销过大**：默认打包了过多不常用协议，导致常态空载物理内存（RSS）过高。
-2. **高并发测速引发 OOM**：在进行多线程测速或大并发流量吞吐时，系统底层的 TCP 缓冲区（Socket Buffer）膨胀，代理程序与 TCP 缓冲区共同作用，导致进程被内核 OOM Killer 强杀。
+2. **GC参数不合理**:默认参数不适合小内存nat机
+3. **高并发测速引发 OOM**：在进行多线程测速或大并发流量吞吐时，TCP 缓冲区（Socket Buffer）膨胀，代理程序与 TCP 缓冲区共同作用，导致进程被内核 OOM Killer 强杀。
 
-`mini-sb-agent` 针对上述痛点进行了极致的精简与优化，以压缩代理程序内存占用：
+`mini-sb-agent` 针对上述痛点进行了精简与优化，主要压缩代理程序内存占用：
 
-* **极简协议栈**：编译期剔除 VMess、Trojan、Shadowsocks 等协议，仅保留 Hysteria 2 与 VLESS Reality。
-* **单进程低开销**：Hysteria 2 与 VLESS 运行于同一个进程内，常态空载物理内存（RSS）仅约 **16.9 MB**。
+* **精简协议栈**：编译期剔除 VMess、Trojan、Shadowsocks 等协议，仅保留 Hysteria 2 与 VLESS Reality。
+* **单进程低开销**：Hysteria 2 与 VLESS 运行于同一个进程内，常态空载物理内存（RSS）仅约 **16MB**。
 * **无用依赖削减**：删除精简了无用依赖库，使用二进制编译，以最大程度压缩内存占用。
-* **自动 GC 限制**：默认设置 `GOMEMLIMIT=40MiB`、`GOGC=70`、限制 `GOMAXPROCS=1`，防止 Go 虚拟机激进申请内存。
+* **自动 GC 限制**：默认设置 `GOMEMLIMIT=40MiB`、`GOGC=70`、限制 `GOMAXPROCS=1`，防止 Go 虚拟机激进申请内存 （刚好匹配mini-sb-agent的参数）。
 
 ---
 
@@ -41,16 +42,16 @@
 ## 技术细节规范 (Technical Specs)
 
 ### 1. 条件编译 TUN 设备支持 (Conditional TUN Module Build)
-如果您需要激活 TUN 虚拟网卡接口以接管主机的全局 network 路由（透明网关配置），必须在编译时加入 `tun` 编译标签：
+如果您需要激活 TUN 虚拟网卡接口以接管主机的全局 network 路由（透明网关配置），必须在编译时加入 `tun` 编译标签(默认一键安装脚本中使用的是已编译不带tun版本)：
 
 ```bash
 go build -tags tun -o mini-sb-agent ./cmd/mini-sb-agent
 ```
 
-如果未使用该标签（默认编译），TUN 协议接口将不会被编译打包，以此排除大量的底层网络依赖，实现最高的二进制精简度和最小的内存开销。
+如果未使用该标签（默认编译），TUN 协议接口将不会被编译打包，以此排除底层网络依赖，实现最高的二进制精简度和最小的内存开销。
 
 ### 2. 日志限制 (Logging)
-为了避免小内存节点因为大量 `TRACE` / `DEBUG` / `INFO` 日志刷写导致 I/O 暴涨或 CPU 开销，项目默认日志级别设定为 **`warn`**。如果需要开启详细日志，可在 `config.json` 中添加：
+为了避免小内存节点因为大量 `TRACE` / `DEBUG` / `INFO` 日志刷写导致 I/O 暴涨或 CPU 开销，项目默认日志级别设定为 **`warn`**。如果需要开启详细日志，可在 `config.json` 中添加（非常不建议开info）：
 
 ```json
 {
@@ -60,8 +61,10 @@ go build -tags tun -o mini-sb-agent ./cmd/mini-sb-agent
   }
 }
 ```
+### 3.用户限速设置
+具体用户限速请在xboard对应位置填写，程序会自动拉取相关信息
 
-### 3. 节点带宽与总体限速参数 (Bandwidth Controls)
+### 4. 节点带宽与总体限速参数 (Bandwidth Controls)
 支持配置 Hysteria 2 与 VLESS Reality 的速率上限。代理支持以下命令行参数：
 
 ```text
@@ -75,7 +78,7 @@ go build -tags tun -o mini-sb-agent ./cmd/mini-sb-agent
 * `-node-rate-mbps`：全局节点级双向总体速率限制。**VLESS Reality 与 Hysteria 2 底层数据无差别地共享此 Token 桶流量**，对并发多协议的整站总带宽设置硬性上限，保护小鸡不被宿主机限速或封锁。
 * *注：单个用户的限速仍会通过 `speed_limit` 在应用层单独被精准限制。*
 
-### 4. Hysteria 2 密码自动映射 (Password Mapping)
+### 5. Hysteria 2 密码自动映射 (Password Mapping)
 `mini-sb-agent` 会自动将该用户的 **VLESS UUID 作为其 Hysteria 2 的连接密码**。用户的面板 ID 将作为其 Hysteria 2 的用户名，方便将两种协议的流量统一统计上报。
 
 ---
