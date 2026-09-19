@@ -47,7 +47,7 @@ mini-sb-agent one-click installer
 
 用法示例：
 
-  # 交互式一键安装：选择 VLESS Reality / HY2 / 两种都装
+  # 交互式一键安装：选择 VLESS Reality / HY2 / 两种都装 / 多节点拓扑
   curl -fsSL https://raw.githubusercontent.com/ashvvvvv/mini-sb-agent/master/install.sh | sh
 
   # 如果 curl | sh 所在终端不能交互，就先下载再运行
