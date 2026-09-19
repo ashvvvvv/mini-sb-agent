@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    {
+      "node_id": "21",
+      "node_type": "vless",
+      "outbound": {
+        "type": "shadowsocks",
+        "server": "192.0.2.10",
+        "server_port": 8388,
+        "method": "2022-blake3-aes-128-gcm",
+        "password": "REPLACE_WITH_BASE64_KEY"
+      }
+    },
+    {
+      "node_id": "22",
+      "node_type": "vless",
+      "outbound": {
+        "type": "direct"
+      }
+    },
+    {
+      "node_id": "23",
+      "node_type": "hysteria",
+      "outbound": {
+        "type": "shadowsocks",
+        "server": "192.0.2.10",
+        "server_port": 8389,
+        "method": "aes-128-gcm",
+        "password": "change-me"
+      }
+    }
+  ]
+}
