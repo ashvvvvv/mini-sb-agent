@@ -47,7 +47,7 @@ mini-sb-agent one-click installer
 
 用法示例：
 
-  # 交互式一键安装：选择 VLESS Reality / HY2 / 两种都装 / 多节点拓扑
+  # 交互式一键安装：选单个/多个节点，协议自动探测；多节点问答生成 topology.json
   curl -fsSL https://raw.githubusercontent.com/ashvvvvv/mini-sb-agent/master/install.sh | sh
 
   # 如果 curl | sh 所在终端不能交互，就先下载再运行
@@ -197,40 +197,36 @@ prompt_yes_no() {
 }
 
 interactive_collect() {
-  info "进入交互式安装。节点类型只有 VLESS Reality 和 HY2。"
+  info "进入交互式安装。协议自动探测，只需填面板节点 ID。"
   prompt PANEL_URL "面板地址，例如 https://board.example.com" "$PANEL_URL" 0
   prompt PANEL_TOKEN "面板节点 token/通讯密钥" "$PANEL_TOKEN" 1
-  printf '选择安装模式：1=只装 VLESS Reality，2=只装 HY2，3=两种都装，4=多节点拓扑（本地 topology.json） [%s]: ' "$NODE_MODE"
+  printf '选择安装类型：1=单个节点，2=多个节点（单进程拓扑） [1]: '
   read_from_tty
-  case "${ans:-$NODE_MODE}" in
-    1|vless|VLESS|reality|Reality) NODE_MODE="vless" ;;
-    2|hy2|HY2|hysteria|hysteria2) NODE_MODE="hy2" ;;
-    3|both|BOTH|all|dual) NODE_MODE="both" ;;
-    4|topo|topology|拓扑) NODE_MODE="topology" ;;
-    *) err "安装模式只能选 1/vless、2/hy2、3/both、4/topology" ;;
+  case "${ans:-1}" in
+    1|single|单) PROBE_MODE="single" ;;
+    2|multi|topo|topology|多) PROBE_MODE="multi" ;;
+    *) err "安装类型只能选 1（单个节点）或 2（多个节点）" ;;
   esac
-  if [ "$NODE_MODE" = "topology" ]; then
-    prompt TOPOLOGY_FILE "topology.json 路径（格式见 topology.example.json）" "${TOPOLOGY_FILE:-./topology.json}" 0
+  if [ "$PROBE_MODE" = "single" ]; then
+    prompt PANEL_NODE_ID "面板节点 ID" "${PANEL_NODE_ID:-}" 0
+    [ -n "$PANEL_NODE_ID" ] || err "节点 ID 不能为空"
+    PROBE_IDS="$PANEL_NODE_ID"
   else
-  case "$NODE_MODE" in
-    vless)
-      prompt VLESS_NODE_ID "VLESS Reality 节点 ID" "${VLESS_NODE_ID:-$PANEL_NODE_ID}" 0
-      PANEL_NODE_ID="$VLESS_NODE_ID"
-      PANEL_NODE_TYPE="vless"
-      ;;
-    hy2)
-      prompt HY2_NODE_ID "HY2 节点 ID" "${HY2_NODE_ID:-$PANEL_NODE_ID}" 0
-      PANEL_NODE_ID="$HY2_NODE_ID"
-      PANEL_NODE_TYPE="hysteria"
-      ;;
-    both)
-      prompt VLESS_NODE_ID "VLESS Reality 节点 ID" "${VLESS_NODE_ID:-$PANEL_NODE_ID}" 0
-      prompt HY2_NODE_ID "HY2 节点 ID" "$HY2_NODE_ID" 0
-      PANEL_NODE_ID="$VLESS_NODE_ID"
-      PANEL_NODE_TYPE="vless"
-      ;;
-  esac
+    prompt NODE_COUNT "几个节点" "2" 0
+    case "$NODE_COUNT" in ''|*[!0-9]*) err "节点数必须是数字" ;; esac
+    [ "$NODE_COUNT" -ge 1 ] && [ "$NODE_COUNT" -le 99 ] || err "节点数范围 1-99"
+    PROBE_IDS=""
+    i=1
+    while [ "$i" -le "$NODE_COUNT" ]; do
+      NODE_ID_INPUT=""
+      prompt NODE_ID_INPUT "第 $i 个节点的面板 node ID" "" 0
+      [ -n "$NODE_ID_INPUT" ] || err "节点 ID 不能为空"
+      case " $PROBE_IDS " in *" $NODE_ID_INPUT "*) err "节点 ID 重复：$NODE_ID_INPUT" ;; esac
+      PROBE_IDS="$PROBE_IDS $NODE_ID_INPUT"
+      i=$((i + 1))
+    done
   fi
+
   if [ "$FORCE" != "1" ] && [ -e "$INSTALL_DIR" ]; then
     if prompt_yes_no "$INSTALL_DIR 已存在，是否覆盖旧安装" n; then
       FORCE="1"
@@ -286,8 +282,95 @@ done
 
 need_root
 
+fetch() {
+  url="$1"
+  out="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL --retry 3 --connect-timeout 15 -o "$out" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$out" "$url"
+  else
+    err "缺少 curl/wget，无法下载"
+  fi
+}
+
+install_pkgs_if_needed() {
+  need_openssl="$1"
+  missing=""
+  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || missing="$missing curl"
+  command -v sha256sum >/dev/null 2>&1 || missing="$missing coreutils"
+  if [ "$need_openssl" = "1" ]; then
+    command -v openssl >/dev/null 2>&1 || missing="$missing openssl"
+  fi
+  [ -z "$missing" ] && return 0
+
+  if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache ca-certificates curl openssl >/dev/null
+  elif command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update >/dev/null
+    apt-get install -y ca-certificates curl openssl >/dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y ca-certificates curl openssl >/dev/null
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y ca-certificates curl openssl >/dev/null
+  else
+    err "缺少依赖$missing，且找不到 apk/apt/dnf/yum 自动安装"
+  fi
+}
+
+install_pkgs_if_needed 0
+
 if [ "$INTERACTIVE" = "1" ] || { [ "$INTERACTIVE" = "auto" ] && is_tty && { [ -z "$PANEL_URL" ] || [ -z "$PANEL_TOKEN" ] || { [ -z "$PANEL_NODE_ID" ] && [ -z "$VLESS_NODE_ID" ] && [ -z "$HY2_NODE_ID" ] && [ -z "$TOPOLOGY_FILE" ] && [ -z "$TOPOLOGY_URL" ]; }; }; }; then
   interactive_collect
+fi
+
+# 交互模式：按 node_id 向面板探测节点协议（与 agent 的 ProbeNodeConfig 同序）
+probe_node_type() {
+  probe_id="$1"
+  probe_base="${PANEL_URL%/}"
+  for probe_t in vless hysteria2 hysteria; do
+    probe_resp="$(curl -fsS -m 20 "$probe_base/api/v1/server/UniProxy/config?token=$PANEL_TOKEN&node_id=$probe_id&node_type=$probe_t" 2>/dev/null)" || continue
+    case "$probe_resp" in
+      *'"protocol":"vless"'*|*'"protocol": "vless"'*) printf 'vless'; return 0 ;;
+      *'"protocol":"hysteria'*|*'"protocol": "hysteria'*) printf 'hysteria'; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+if [ -n "$PROBE_MODE" ]; then
+  info "正在通过面板探测节点协议..."
+  TOPO_NODES=""
+  for probe_id in $PROBE_IDS; do
+    probe_t="$(probe_node_type "$probe_id")" || err "无法探测节点 $probe_id：面板查询失败（检查面板地址 / token / node id）"
+    info "  节点 $probe_id → $probe_t"
+    TOPO_NODES="$TOPO_NODES $probe_id:$probe_t"
+  done
+  if [ "$PROBE_MODE" = "single" ]; then
+    probe_entry="${TOPO_NODES# }"
+    NODE_MODE="${probe_entry#*:}"
+    PANEL_NODE_ID="${probe_entry%%:*}"
+    PANEL_NODE_TYPE="$NODE_MODE"
+    [ "$NODE_MODE" = "hysteria" ] && NODE_MODE="hy2"
+    info "单节点模式：$PANEL_NODE_ID（$PANEL_NODE_TYPE）"
+  else
+    TOPOLOGY_FILE="${TOPOLOGY_FILE:-./topology.json}"
+    if [ -e "$TOPOLOGY_FILE" ] && [ "$FORCE" != "1" ]; then
+      prompt_yes_no "$TOPOLOGY_FILE 已存在，覆盖生成" y || err "请用 --topology-file 指定其他路径，或先备份现有文件"
+    fi
+    {
+      printf '{\n  "nodes": [\n'
+      probe_first=1
+      for probe_entry in $TOPO_NODES; do
+        [ "$probe_first" = "1" ] || printf ',\n'
+        printf '    {"node_id": "%s", "node_type": "%s", "outbound": {"type": "direct"}}' "$(json_escape "${probe_entry%%:*}")" "${probe_entry#*:}"
+        probe_first=0
+      done
+      printf '\n  ]\n}\n'
+    } > "$TOPOLOGY_FILE"
+    info "已生成 $TOPOLOGY_FILE（出站默认 direct；需要 SS 出站请编辑此文件后用 --topology-file 重装）"
+  fi
 fi
 
 [ -n "$PANEL_URL" ] || err "缺少 --panel-url；可直接运行 sh install.sh 进入交互式安装"
@@ -347,44 +430,6 @@ cleanup() { rm -rf "$TMPDIR"; }
 trap cleanup EXIT HUP INT TERM
 
 
-fetch() {
-  url="$1"
-  out="$2"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fL --retry 3 --connect-timeout 15 -o "$out" "$url"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -O "$out" "$url"
-  else
-    err "缺少 curl/wget，无法下载"
-  fi
-}
-
-install_pkgs_if_needed() {
-  need_openssl="$1"
-  missing=""
-  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || missing="$missing curl"
-  command -v sha256sum >/dev/null 2>&1 || missing="$missing coreutils"
-  if [ "$need_openssl" = "1" ]; then
-    command -v openssl >/dev/null 2>&1 || missing="$missing openssl"
-  fi
-  [ -z "$missing" ] && return 0
-
-  if command -v apk >/dev/null 2>&1; then
-    apk add --no-cache ca-certificates curl openssl >/dev/null
-  elif command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update >/dev/null
-    apt-get install -y ca-certificates curl openssl >/dev/null
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y ca-certificates curl openssl >/dev/null
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y ca-certificates curl openssl >/dev/null
-  else
-    err "缺少依赖$missing，且找不到 apk/apt/dnf/yum 自动安装"
-  fi
-}
-
-install_pkgs_if_needed 0
 
 # 拓扑模式：准备 topology.json 并解析所需能力（POSIX sh，无 jq 依赖）
 TOPOLOGY_VARIANT=""
