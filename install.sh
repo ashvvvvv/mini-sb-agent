@@ -3,7 +3,7 @@ set -eu
 
 APP="mini-sb-agent"
 REPO="ashvvvvv/mini-sb-agent"
-VERSION="v0.1.2"
+VERSION="v0.2.0"
 INSTALL_DIR="/opt/mini-sb-agent"
 RUN_DIR="/run/mini-sb-agent"
 SERVICE_NAME="mini-sb-agent"
