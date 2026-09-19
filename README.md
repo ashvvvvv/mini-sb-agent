@@ -1,7 +1,9 @@
 # mini-sb-agent
 
-轻量级 sing-box 内核节点管理客户端，面向内存受限的 NAT VPS / 小内存机器。
+基于sing-box的轻量级魔改版内核节点管理客户端，面向内存受限的 NAT VPS / 小内存机器。
+目前兼容xboard使用。
 单进程即可运行多协议、多节点拓扑。
+支持vless reality/Hy2 inbound   direct/Shadowsocks  outbound自由搭配构建且数量不限。
 
 ## 特性
 
@@ -20,13 +22,12 @@
 
 | 版本 | 二进制 | 空闲 RSS |
 |---|---|---|
-| v0.1.2（旧稳定版） | 26.9MB | 21.1MB |
-| v0.2.0 全量构建 | 25.6MB | 20.2MB（-4.4%） |
-| v0.2.0 裁剪变体 | 24.4MB | 19.5MB（-7.8%） |
+| v0.1.2| 26.9MB | 21.1MB |
+| v0.2.0| 24.4MB | 19.5MB（-7.8%） |
 
 > 注：上表二进制为本地同参数构建（RSS 对比口径一致）；release 资产经
 > `-s -w` 裁剪，体积见下表。v0.2.0 安装器默认内置内存参数
-> （GOGC / GOMEMLIMIT / madvdontneed / 周期归还），实际占用优于上表，
+> （GOMAXPROCS=1  GOGC=70  GOMEMLIMIT=40MiB  GODEBUG=madvdontneed=1  SCAVENGE_EVERY=30s ）可修改，实际占用优于上表，
 > 且负载结束后 RSS 可回落。
 
 六构建矩阵（amd64 release 资产体积）：
@@ -40,7 +41,9 @@
 | vless-hy2-direct | 16.8MB | 双协议，直出 |
 | vless-hy2-ss（=全量） | 17.6MB | 双协议，含 SS 出站 |
 
-安装器会读取 topology.json 自动选择最小可用构建，资产缺失时回退全量。
+安装器会读取 topology.json 自动选择最小可用构建，资产缺失时回退全量
+ss出站需在topology.json内自行添加
+后续会写配套面板并支持outbound ss自动下发、热更新
 
 ## 安装
 
@@ -74,7 +77,7 @@ sh install.sh $PANEL --topology-url https://example.com/topology.json --yes
 
 ## 拓扑配置
 
-topology.json 只声明"有哪些节点 + 每个节点的流量去哪"（完整示例见
+topology.json 只声明"有哪些节点 + 每个节点的流量向哪上报"（完整示例见
 [topology.example.json](topology.example.json)）：
 
 ```json
@@ -95,12 +98,12 @@ topology.json 只声明"有哪些节点 + 每个节点的流量去哪"（完整�
   （server / server_port / method / password，须与落地机 SS 服务端一致）
 
 改出站 / 加减节点：编辑 topology.json 后 `systemctl restart mini-sb-agent`
-（重启断连几秒）。面板用户列表的增删改不需要重启，每分钟自动同步。
+。面板用户列表的增删改不需要重启，每分钟自动同步。
 
 ## 限速
 
 两层限速可叠加（实际速率取较小者），上传 / 下载方向各自独立——
-下载打满不影响上传 ACK：
+上下行ACK分桶：
 
 - **用户级**：面板用户列表的 `speed_limit`（Mbps），同步时自动应用，
   改限速不断连（热更新）。同一用户在多个节点间共享同一限速值
