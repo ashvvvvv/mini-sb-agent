@@ -16,20 +16,98 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.variant }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
+          # 全量构建：兼容单/双节点与拓扑模式
           - goos: linux
             goarch: amd64
             goamd64: v1
             suffix: linux-amd64
+            tags: 'with_quic with_utls'
+            variant: ''
           - goos: linux
             goarch: arm64
             goamd64: ''
             suffix: linux-arm64
+            tags: 'with_quic with_utls'
+            variant: ''
+          # 六构建矩阵：按拓扑需求裁剪（vless 变体需 with_utls 支持 Reality）
+          - goos: linux
+            goarch: amd64
+            goamd64: v1
+            suffix: linux-amd64-vless-direct
+            tags: 'minimal with_vless with_utls'
+            variant: '-vless-direct'
+          - goos: linux
+            goarch: amd64
+            goamd64: v1
+            suffix: linux-amd64-vless-ss
+            tags: 'minimal with_vless with_utls with_shadowsocks_outbound'
+            variant: '-vless-ss'
+          - goos: linux
+            goarch: amd64
+            goamd64: v1
+            suffix: linux-amd64-hy2-direct
+            tags: 'minimal with_hysteria2'
+            variant: '-hy2-direct'
+          - goos: linux
+            goarch: amd64
+            goamd64: v1
+            suffix: linux-amd64-hy2-ss
+            tags: 'minimal with_hysteria2 with_shadowsocks_outbound'
+            variant: '-hy2-ss'
+          - goos: linux
+            goarch: amd64
+            goamd64: v1
+            suffix: linux-amd64-vless-hy2-direct
+            tags: 'minimal with_vless with_hysteria2 with_utls'
+            variant: '-vless-hy2-direct'
+          - goos: linux
+            goarch: amd64
+            goamd64: v1
+            suffix: linux-amd64-vless-hy2-ss
+            tags: 'minimal with_vless with_hysteria2 with_utls with_shadowsocks_outbound'
+            variant: '-vless-hy2-ss'
+          - goos: linux
+            goarch: arm64
+            goamd64: ''
+            suffix: linux-arm64-vless-direct
+            tags: 'minimal with_vless with_utls'
+            variant: '-vless-direct'
+          - goos: linux
+            goarch: arm64
+            goamd64: ''
+            suffix: linux-arm64-vless-ss
+            tags: 'minimal with_vless with_utls with_shadowsocks_outbound'
+            variant: '-vless-ss'
+          - goos: linux
+            goarch: arm64
+            goamd64: ''
+            suffix: linux-arm64-hy2-direct
+            tags: 'minimal with_hysteria2'
+            variant: '-hy2-direct'
+          - goos: linux
+            goarch: arm64
+            goamd64: ''
+            suffix: linux-arm64-hy2-ss
+            tags: 'minimal with_hysteria2 with_shadowsocks_outbound'
+            variant: '-hy2-ss'
+          - goos: linux
+            goarch: arm64
+            goamd64: ''
+            suffix: linux-arm64-vless-hy2-direct
+            tags: 'minimal with_vless with_hysteria2 with_utls'
+            variant: '-vless-hy2-direct'
+          - goos: linux
+            goarch: arm64
+            goamd64: ''
+            suffix: linux-arm64-vless-hy2-ss
+            tags: 'minimal with_vless with_hysteria2 with_utls with_shadowsocks_outbound'
+            variant: '-vless-hy2-ss'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,7 +130,7 @@ jobs:
             export GOAMD64='${{ matrix.goamd64 }}'
           fi
           go build -trimpath \
-            -tags 'with_quic with_utls' \
+            -tags '${{ matrix.tags }}' \
             -ldflags '-s -w -buildid=' \
             -o 'dist/mini-sb-agent-${{ matrix.suffix }}' \
             ./cmd/mini-sb-agent

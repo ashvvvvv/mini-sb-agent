@@ -1,2 +1,6 @@
 local-artifacts/
 builds/
+
+# local build artifacts
+*.exe
+build/

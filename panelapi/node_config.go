@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 )
@@ -78,21 +77,16 @@ func (c *Client) FetchNodeConfig(ctx context.Context) (NodeConfig, error) {
 	if err != nil {
 		return NodeConfig{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ep, nil)
+	resp, err := c.HTTP.do(ctx, "GET", ep, nil, nil)
 	if err != nil {
 		return NodeConfig{}, err
 	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return NodeConfig{}, err
-	}
-	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		var msg struct {
 			Message string `json:"message"`
 			Error   string `json:"error"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&msg)
+		_ = json.Unmarshal(resp.Body, &msg)
 		text := strings.TrimSpace(msg.Message)
 		if text == "" {
 			text = strings.TrimSpace(msg.Error)
@@ -103,11 +97,7 @@ func (c *Client) FetchNodeConfig(ctx context.Context) (NodeConfig, error) {
 		return NodeConfig{}, fmt.Errorf("panel api config status %s", resp.Status)
 	}
 
-	var raw json.RawMessage
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return NodeConfig{}, err
-	}
-	cfg, err := decodeNodeConfig(raw)
+	cfg, err := decodeNodeConfig(json.RawMessage(resp.Body))
 	if err != nil {
 		return NodeConfig{}, err
 	}

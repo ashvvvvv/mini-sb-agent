@@ -8,9 +8,6 @@ import (
 	"mini-sb-agent/panelapi"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing-box/protocol/hysteria2"
-	"github.com/sagernet/sing-box/protocol/vless"
 )
 
 // limiterPair holds separate read (rx) and write (tx) rate limiters so that
@@ -39,10 +36,19 @@ func (p limiterPair) Close() {
 	p.tx.Close()
 }
 
+// UserManager keeps per-inbound user snapshots so that multiple nodes of the
+// same protocol never share credentials, and applies authentication deltas
+// only (speed-limit changes must not disconnect live sessions).
+//
+// Locking: applyMu serializes apply operations; m.mu guards the state maps and
+// is NEVER held while inbound methods (AddUsers/DelUsers) are called, because
+// those may in turn invoke authentication callbacks that resolve users.
 type UserManager struct {
+	applyMu   sync.Mutex
 	mu        sync.Mutex
 	users     map[int]panelapi.User
 	bySecret  map[string]int
+	byInbound map[string]map[int]panelapi.User
 	nodeLimit *limiterPair
 	limiters  map[int]*limiterPair
 }
@@ -56,6 +62,7 @@ func NewUserManager(nodeMbps int) *UserManager {
 	return &UserManager{
 		users:     make(map[int]panelapi.User),
 		bySecret:  make(map[string]int),
+		byInbound: make(map[string]map[int]panelapi.User),
 		nodeLimit: nodeLim,
 		limiters:  make(map[int]*limiterPair),
 	}
@@ -68,108 +75,125 @@ func mbpsToBytes(mbps int) int64 {
 	return int64(mbps) * 1000 * 1000 / 8
 }
 
-func sameUser(a, b panelapi.User) bool {
-	return a.ID == b.ID && a.UUID == b.UUID && a.Password == b.Password && a.Name == b.Name && a.SpeedLimit == b.SpeedLimit
-}
-
-func vlessUserFromPanelUser(u panelapi.User) option.VLESSUser {
-	return option.VLESSUser{Name: u.UUID, UUID: u.UUID, Flow: "xtls-rprx-vision"}
-}
-
-func (m *UserManager) ApplyBox(inbounds map[string]adapter.Inbound, users []panelapi.User) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	next := make(map[int]panelapi.User, len(users))
-	nextSecrets := make(map[string]int, len(users)*3)
+func usersByID(users []panelapi.User) map[int]panelapi.User {
+	m := make(map[int]panelapi.User, len(users))
 	for _, u := range users {
-		if u.ID <= 0 {
-			continue
+		if u.ID > 0 {
+			m[u.ID] = u
 		}
-		next[u.ID] = u
+	}
+	return m
+}
+
+func secretsFrom(users map[int]panelapi.User) map[string]int {
+	out := make(map[string]int, len(users)*3)
+	for id, u := range users {
 		for _, secret := range []string{u.UUID, u.Password, u.Name} {
 			if secret != "" {
-				nextSecrets[secret] = u.ID
+				out[secret] = id
 			}
 		}
 	}
+	return out
+}
 
-	var addVless []option.VLESSUser
-	var delVless []string
-	var addHy2 []option.Hysteria2User
-	var addHy2IDs []int
-	var delHy2 []string
+// ApplyBox applies one shared user list to every inbound (legacy single- or
+// dual-node mode). With no inbounds it only refreshes global state.
+func (m *UserManager) ApplyBox(inbounds map[string]adapter.Inbound, users []panelapi.User) error {
+	if len(inbounds) == 0 {
+		return m.applyGlobal(users)
+	}
+	byInbound := make(map[string][]panelapi.User, len(inbounds))
+	for tag := range inbounds {
+		byInbound[tag] = users
+	}
+	return m.ApplyBoxByInbound(inbounds, byInbound)
+}
 
-	for id, old := range m.users {
-		nu, ok := next[id]
-		if !ok {
-			if old.UUID != "" {
-				delVless = append(delVless, old.UUID)
-			}
-			if old.Password != "" {
-				delHy2 = append(delHy2, old.Password)
-			}
-			m.closeLimiterLocked(id)
-			continue
-		}
-		if old.UUID != nu.UUID || old.Password != nu.Password || old.Name != nu.Name {
-			if old.UUID != "" {
-				delVless = append(delVless, old.UUID)
-			}
-			if old.Password != "" {
-				delHy2 = append(delHy2, old.Password)
-			}
+// ApplyBoxByInbound applies an independent user list per inbound tag. Tags not
+// present in usersByInbound end up with no users. This is the multi-node
+// topology path: users from node A must never authenticate on node B even when
+// both nodes use the same protocol.
+func (m *UserManager) ApplyBoxByInbound(inbounds map[string]adapter.Inbound, usersByInbound map[string][]panelapi.User) error {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+
+	oldByInbound := make(map[string]map[int]panelapi.User, len(inbounds))
+	m.mu.Lock()
+	for tag := range inbounds {
+		if old, ok := m.byInbound[tag]; ok {
+			oldByInbound[tag] = old
 		}
 	}
-	for id, nu := range next {
-		old, ok := m.users[id]
-		if ok && sameUser(old, nu) {
-			m.updateLimiterLocked(nu)
-			continue
-		}
-		if nu.UUID != "" {
-			addVless = append(addVless, vlessUserFromPanelUser(nu))
-		}
-		if nu.Password != "" {
-			name := nu.Name
-			if name == "" {
-				name = nu.Password
-			}
-			addHy2 = append(addHy2, option.Hysteria2User{Name: name, Password: nu.Password})
-			addHy2IDs = append(addHy2IDs, nu.ID)
-		}
-		m.updateLimiterLocked(nu)
-	}
+	m.mu.Unlock()
 
+	// Apply authentication deltas outside m.mu: inbound methods may trigger
+	// callbacks that call back into Resolve.
 	for tag, raw := range inbounds {
-		switch in := raw.(type) {
-		case *vless.Inbound:
-			if len(delVless) > 0 {
-				if err := in.DelUsers(delVless); err != nil {
-					return fmt.Errorf("delete vless users from %s: %w", tag, err)
-				}
-			}
-			if len(addVless) > 0 {
-				if err := in.AddUsers(addVless); err != nil {
-					return fmt.Errorf("add vless users to %s: %w", tag, err)
-				}
-			}
-		case *hysteria2.Inbound:
-			if len(delHy2) > 0 {
-				if err := in.DelUsers(delHy2); err != nil {
-					return fmt.Errorf("delete hysteria2 users from %s: %w", tag, err)
-				}
-			}
-			if len(addHy2) > 0 {
-				if err := in.AddUsers(addHy2, addHy2IDs); err != nil {
-					return fmt.Errorf("add hysteria2 users to %s: %w", tag, err)
-				}
-			}
+		next := usersByInbound[tag]
+		old := oldByInbound[tag]
+		if old == nil {
+			old = map[int]panelapi.User{}
+		}
+		handled, err := applyVLESSUsers(raw, tag, next, old)
+		if err != nil {
+			return err
+		}
+		if handled {
+			continue
+		}
+		if _, err := applyHysteria2Users(raw, tag, next, old); err != nil {
+			return err
 		}
 	}
 
+	// Commit snapshots. Conflicting credentials for one ID across nodes are
+	// rejected upstream by mergeUsersByNode; the union below is a last-writer
+	// defense only.
+	nextByInbound := make(map[string]map[int]panelapi.User, len(usersByInbound))
+	union := make(map[int]panelapi.User)
+	for tag, users := range usersByInbound {
+		snapshot := usersByID(users)
+		nextByInbound[tag] = snapshot
+		for id, u := range snapshot {
+			union[id] = u
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.byInbound = nextByInbound
+	m.users = union
+	m.bySecret = secretsFrom(union)
+	for id := range m.limiters {
+		if _, ok := union[id]; !ok {
+			m.closeLimiterLocked(id)
+		}
+	}
+	for _, u := range union {
+		m.updateLimiterLocked(u)
+	}
+	return nil
+}
+
+// applyGlobal refreshes global user state without touching any inbound. Used
+// by ApplyBox when no live inbounds exist yet (startup, tests).
+func (m *UserManager) applyGlobal(users []panelapi.User) error {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	next := usersByID(users)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id := range m.limiters {
+		if _, ok := next[id]; !ok {
+			m.closeLimiterLocked(id)
+		}
+	}
+	for _, u := range next {
+		m.updateLimiterLocked(u)
+	}
 	m.users = next
-	m.bySecret = nextSecrets
+	m.bySecret = secretsFrom(next)
 	return nil
 }
 
@@ -212,6 +236,17 @@ func (m *UserManager) ActiveIDs() map[string]struct{} {
 	out := make(map[string]struct{}, len(m.users))
 	for id := range m.users {
 		out[fmt.Sprint(id)] = struct{}{}
+	}
+	return out
+}
+
+// InboundSnapshot returns the committed user snapshot for one inbound tag.
+func (m *UserManager) InboundSnapshot(tag string) map[int]panelapi.User {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[int]panelapi.User, len(m.byInbound[tag]))
+	for id, u := range m.byInbound[tag] {
+		out[id] = u
 	}
 	return out
 }

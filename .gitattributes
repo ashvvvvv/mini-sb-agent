@@ -1,0 +1,9 @@
+# 统一 LF：本仓库与 Linux 生产机同步，CRLF 会破坏脚本与 md5 锚点
+* text=auto eol=lf
+
+# 二进制文件不做任何转换
+*.png -text
+*.exe -text
+mini-sb-agent -text
+mini-sb-panel -text
+*.pem -text

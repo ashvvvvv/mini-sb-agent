@@ -11,6 +11,8 @@ NODE_MODE="vless"
 PANEL_NODE_TYPE="vless"
 VLESS_NODE_ID=""
 HY2_NODE_ID=""
+TOPOLOGY_FILE=""
+TOPOLOGY_URL=""
 PANEL_EVERY="60s"
 NODE_RATE_MBPS="0"
 HY2_UP_MBPS="0"
@@ -19,6 +21,8 @@ HY2_IGNORE_CLIENT_BANDWIDTH="0"
 GOMEMLIMIT="40MiB"
 GOGC="70"
 GOMAXPROCS="1"
+GODEBUG="madvdontneed=1"
+SCAVENGE_EVERY="30s"
 PROTOCOL="vless"
 LISTEN_ADDR="::"
 VLESS_PORT=""
@@ -74,6 +78,15 @@ mini-sb-agent one-click installer
     --hy2-node-id 2 \
     --yes
 
+  # 非交互安装：多节点拓扑模式（单进程任意数量 vless/hy2 节点，每节点独立出站）
+  # topology.json 格式见仓库 topology.example.json；安装器按拓扑内容自动选择
+  # 六构建矩阵中最小的可用构建，不可用时回退全量构建
+  sh install.sh \
+    --panel-url https://board.example.com \
+    --panel-token '节点密钥' \
+    --topology-file ./topology.json \
+    --yes
+
 参数：
   --panel-url URL                  Xboard/面板地址，例如 https://board.example.com
   --panel-token TOKEN              面板节点 token
@@ -81,6 +94,8 @@ mini-sb-agent one-click installer
   --panel-node-id ID               兼容旧参数；单节点模式下等同对应节点 ID
   --vless-node-id ID               VLESS Reality 节点 ID
   --hy2-node-id ID                 HY2 节点 ID
+  --topology-file PATH            多节点拓扑模式：本地 topology.json
+  --topology-url URL              多节点拓扑模式：下载 topology.json
   --panel-every DURATION           默认 60s
 
   --config-file PATH               可选：使用本地 config.json，跳过面板节点配置生成
@@ -90,6 +105,8 @@ mini-sb-agent one-click installer
   --gomemlimit VALUE               默认 40MiB；极小内存可用 36MiB
   --gogc N                         默认 70；极小内存可用 60
   --gomaxprocs N                   默认 1
+  --godebug VALUE                  默认 madvdontneed=1（内存归还后立即退出 RSS）
+  --scavenge-every DURATION        默认 30s；周期强制 GC 归还内存；0 关闭
   --version TAG                    GitHub Release tag，默认 v0.1.2
   环境变量 MINI_SB_BASE_URL         可覆盖下载地址，测试/内网安装用
   --force                          覆盖旧安装
@@ -183,14 +200,18 @@ interactive_collect() {
   info "进入交互式安装。节点类型只有 VLESS Reality 和 HY2。"
   prompt PANEL_URL "面板地址，例如 https://board.example.com" "$PANEL_URL" 0
   prompt PANEL_TOKEN "面板节点 token/通讯密钥" "$PANEL_TOKEN" 1
-  printf '选择安装模式：1=只装 VLESS Reality，2=只装 HY2，3=两种都装 [%s]: ' "$NODE_MODE"
+  printf '选择安装模式：1=只装 VLESS Reality，2=只装 HY2，3=两种都装，4=多节点拓扑（本地 topology.json） [%s]: ' "$NODE_MODE"
   read_from_tty
   case "${ans:-$NODE_MODE}" in
     1|vless|VLESS|reality|Reality) NODE_MODE="vless" ;;
     2|hy2|HY2|hysteria|hysteria2) NODE_MODE="hy2" ;;
     3|both|BOTH|all|dual) NODE_MODE="both" ;;
-    *) err "安装模式只能选 1/vless、2/hy2、3/both" ;;
+    4|topo|topology|拓扑) NODE_MODE="topology" ;;
+    *) err "安装模式只能选 1/vless、2/hy2、3/both、4/topology" ;;
   esac
+  if [ "$NODE_MODE" = "topology" ]; then
+    prompt TOPOLOGY_FILE "topology.json 路径（格式见 topology.example.json）" "${TOPOLOGY_FILE:-./topology.json}" 0
+  else
   case "$NODE_MODE" in
     vless)
       prompt VLESS_NODE_ID "VLESS Reality 节点 ID" "${VLESS_NODE_ID:-$PANEL_NODE_ID}" 0
@@ -209,6 +230,7 @@ interactive_collect() {
       PANEL_NODE_TYPE="vless"
       ;;
   esac
+  fi
   if [ "$FORCE" != "1" ] && [ -e "$INSTALL_DIR" ]; then
     if prompt_yes_no "$INSTALL_DIR 已存在，是否覆盖旧安装" n; then
       FORCE="1"
@@ -228,6 +250,8 @@ while [ "$#" -gt 0 ]; do
     --node-mode) NODE_MODE="${2:-}"; shift 2 ;;
     --vless-node-id) VLESS_NODE_ID="${2:-}"; shift 2 ;;
     --hy2-node-id) HY2_NODE_ID="${2:-}"; shift 2 ;;
+    --topology-file) TOPOLOGY_FILE="${2:-}"; shift 2 ;;
+    --topology-url) TOPOLOGY_URL="${2:-}"; shift 2 ;;
     --panel-node-type) PANEL_NODE_TYPE="${2:-}"; shift 2 ;;
     --panel-every) PANEL_EVERY="${2:-}"; shift 2 ;;
     --config-file) CONFIG_FILE="${2:-}"; shift 2 ;;
@@ -247,6 +271,8 @@ while [ "$#" -gt 0 ]; do
     --gomemlimit) GOMEMLIMIT="${2:-}"; shift 2 ;;
     --gogc) GOGC="${2:-}"; shift 2 ;;
     --gomaxprocs) GOMAXPROCS="${2:-}"; shift 2 ;;
+    --godebug) GODEBUG="${2:-}"; shift 2 ;;
+    --scavenge-every) SCAVENGE_EVERY="${2:-}"; shift 2 ;;
     --version) VERSION="${2:-}"; shift 2 ;;
     --force) FORCE="1"; shift ;;
     --yes) ASSUME_YES="1"; shift ;;
@@ -260,12 +286,20 @@ done
 
 need_root
 
-if [ "$INTERACTIVE" = "1" ] || { [ "$INTERACTIVE" = "auto" ] && is_tty && { [ -z "$PANEL_URL" ] || [ -z "$PANEL_TOKEN" ] || { [ -z "$PANEL_NODE_ID" ] && [ -z "$VLESS_NODE_ID" ] && [ -z "$HY2_NODE_ID" ]; }; }; }; then
+if [ "$INTERACTIVE" = "1" ] || { [ "$INTERACTIVE" = "auto" ] && is_tty && { [ -z "$PANEL_URL" ] || [ -z "$PANEL_TOKEN" ] || { [ -z "$PANEL_NODE_ID" ] && [ -z "$VLESS_NODE_ID" ] && [ -z "$HY2_NODE_ID" ] && [ -z "$TOPOLOGY_FILE" ] && [ -z "$TOPOLOGY_URL" ]; }; }; }; then
   interactive_collect
 fi
 
 [ -n "$PANEL_URL" ] || err "缺少 --panel-url；可直接运行 sh install.sh 进入交互式安装"
 [ -n "$PANEL_TOKEN" ] || err "缺少 --panel-token；可直接运行 sh install.sh 进入交互式安装"
+
+if [ -n "$TOPOLOGY_FILE" ] || [ -n "$TOPOLOGY_URL" ]; then
+  # 多节点拓扑模式
+  [ -n "$TOPOLOGY_FILE" ] && [ -n "$TOPOLOGY_URL" ] && err "--topology-file 和 --topology-url 只能二选一"
+  [ -n "$CONFIG_FILE" ] && err "拓扑模式下不能用 --config-file（config 由 agent 启动时自动生成）"
+  [ -n "$CONFIG_URL" ] && err "拓扑模式下不能用 --config-url（config 由 agent 启动时自动生成）"
+  NODE_MODE="topology"
+else
 case "$NODE_MODE" in
   vless|VLESS|reality|Reality) NODE_MODE="vless" ;;
   hy2|HY2|hysteria|hysteria2) NODE_MODE="hy2" ;;
@@ -293,6 +327,7 @@ case "$NODE_MODE" in
     [ -n "$HY2_NODE_ID" ] || err "both 模式缺少 --hy2-node-id"
     ;;
 esac
+fi
 
 if [ -n "$CONFIG_FILE" ] && [ -n "$CONFIG_URL" ]; then
   err "--config-file 和 --config-url 只能二选一"
@@ -310,6 +345,7 @@ BASE_URL="${MINI_SB_BASE_URL:-https://github.com/$REPO/releases/download/$VERSIO
 TMPDIR="$(mktemp -d /tmp/mini-sb-install.XXXXXX)"
 cleanup() { rm -rf "$TMPDIR"; }
 trap cleanup EXIT HUP INT TERM
+
 
 fetch() {
   url="$1"
@@ -350,13 +386,55 @@ install_pkgs_if_needed() {
 
 install_pkgs_if_needed 0
 
+# 拓扑模式：准备 topology.json 并解析所需能力（POSIX sh，无 jq 依赖）
+TOPOLOGY_VARIANT=""
+TOPOLOGY_SRC=""
+if [ "$NODE_MODE" = "topology" ]; then
+  if [ -n "$TOPOLOGY_URL" ]; then
+    TOPOLOGY_SRC="$TMPDIR/topology.json"
+    fetch "$TOPOLOGY_URL" "$TOPOLOGY_SRC"
+  else
+    [ -f "$TOPOLOGY_FILE" ] || err "topology 文件不存在：$TOPOLOGY_FILE"
+    TOPOLOGY_SRC="$TOPOLOGY_FILE"
+  fi
+  grep -q '"node_id"' "$TOPOLOGY_SRC" || err "topology 文件里没有节点（缺少 node_id 字段）"
+  TOPO_HAS_VLESS=0; TOPO_HAS_HY2=0; TOPO_HAS_SS=0
+  grep -Eq '"node_type"[[:space:]]*:[[:space:]]*"(vless|vless-reality|reality)"' "$TOPOLOGY_SRC" && TOPO_HAS_VLESS=1
+  grep -Eq '"node_type"[[:space:]]*:[[:space:]]*"(hysteria|hy2|hysteria2)"' "$TOPOLOGY_SRC" && TOPO_HAS_HY2=1
+  grep -Eq '"type"[[:space:]]*:[[:space:]]*"(shadowsocks|ss)"' "$TOPOLOGY_SRC" && TOPO_HAS_SS=1
+  if [ "$TOPO_HAS_VLESS" = "0" ] && [ "$TOPO_HAS_HY2" = "0" ]; then
+    err "topology 里没有可识别的 node_type（只支持 vless / hysteria）"
+  fi
+  if [ "$TOPO_HAS_VLESS" = "1" ] && [ "$TOPO_HAS_HY2" = "1" ]; then
+    if [ "$TOPO_HAS_SS" = "1" ]; then TOPOLOGY_VARIANT="vless-hy2-ss"; else TOPOLOGY_VARIANT="vless-hy2-direct"; fi
+  elif [ "$TOPO_HAS_VLESS" = "1" ]; then
+    if [ "$TOPO_HAS_SS" = "1" ]; then TOPOLOGY_VARIANT="vless-ss"; else TOPOLOGY_VARIANT="vless-direct"; fi
+  else
+    if [ "$TOPO_HAS_SS" = "1" ]; then TOPOLOGY_VARIANT="hy2-ss"; else TOPOLOGY_VARIANT="hy2-direct"; fi
+  fi
+  info "拓扑能力：vless=$TOPO_HAS_VLESS hy2=$TOPO_HAS_HY2 ss出站=$TOPO_HAS_SS → 优先裁剪构建 $TOPOLOGY_VARIANT"
+fi
+
 if [ -e "$INSTALL_DIR" ] && [ "$FORCE" != "1" ]; then
   err "$INSTALL_DIR 已存在。确认要覆盖请加 --force"
 fi
 
-info "下载 $ASSET $VERSION"
-fetch "$BASE_URL/$ASSET" "$TMPDIR/$ASSET"
-fetch "$BASE_URL/$ASSET.sha256" "$TMPDIR/$ASSET.sha256"
+if [ -n "$TOPOLOGY_VARIANT" ]; then
+  ASSET="mini-sb-agent-linux-$ASSET_ARCH-$TOPOLOGY_VARIANT"
+  info "下载裁剪构建 $ASSET $VERSION"
+  if ! fetch "$BASE_URL/$ASSET" "$TMPDIR/$ASSET" 2>/dev/null || ! fetch "$BASE_URL/$ASSET.sha256" "$TMPDIR/$ASSET.sha256" 2>/dev/null; then
+    info "裁剪构建 $ASSET 不可用，回退全量构建"
+    rm -f "$TMPDIR/$ASSET" "$TMPDIR/$ASSET.sha256"
+    ASSET="mini-sb-agent-linux-$ASSET_ARCH"
+    fetch "$BASE_URL/$ASSET" "$TMPDIR/$ASSET"
+    fetch "$BASE_URL/$ASSET.sha256" "$TMPDIR/$ASSET.sha256"
+  fi
+else
+  ASSET="mini-sb-agent-linux-$ASSET_ARCH"
+  info "下载 $ASSET $VERSION"
+  fetch "$BASE_URL/$ASSET" "$TMPDIR/$ASSET"
+  fetch "$BASE_URL/$ASSET.sha256" "$TMPDIR/$ASSET.sha256"
+fi
 (
   cd "$TMPDIR"
   sha256sum -c "$ASSET.sha256"
@@ -385,6 +463,13 @@ info "安装到 $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR" "$RUN_DIR"
 install -m 0755 "$TMPDIR/$ASSET" "$INSTALL_DIR/$APP"
 
+if [ "$NODE_MODE" = "topology" ]; then
+  # 二进制必须支持拓扑模式（公开稳定版 v0.1.x 不支持，给出明确报错）
+  if ! "$INSTALL_DIR/$APP" -h 2>&1 | grep -q -- '-topology'; then
+    err "下载的二进制不支持拓扑模式（缺少 -topology 参数）。请确认 MINI_SB_BASE_URL/--version 指向包含拓扑支持的构建"
+  fi
+fi
+
 if [ -n "$CONFIG_FILE" ]; then
   [ -f "$CONFIG_FILE" ] || err "config-file 不存在：$CONFIG_FILE"
   install -m 0600 "$CONFIG_FILE" "$INSTALL_DIR/config.json"
@@ -395,6 +480,10 @@ else
   # config.json is generated just before mini-sb-agent starts. The generator
   # exits immediately, so it adds no runtime process or resident memory.
   rm -f "$INSTALL_DIR/config.json"
+fi
+if [ "$NODE_MODE" = "topology" ]; then
+  # 拓扑模式下 config.json 由 agent 启动时自动生成；topology.json 落盘保存
+  install -m 0600 "$TOPOLOGY_SRC" "$INSTALL_DIR/topology.json"
 fi
 cat > "$INSTALL_DIR/env" <<EOF
 PANEL_URL=$(shell_quote "$PANEL_URL")
@@ -412,6 +501,9 @@ HY2_IGNORE_CLIENT_BANDWIDTH=$(shell_quote "$HY2_IGNORE_CLIENT_BANDWIDTH")
 GOMAXPROCS=$(shell_quote "$GOMAXPROCS")
 GOMEMLIMIT=$(shell_quote "$GOMEMLIMIT")
 GOGC=$(shell_quote "$GOGC")
+GODEBUG=$(shell_quote "$GODEBUG")
+SCAVENGE_EVERY=$(shell_quote "$SCAVENGE_EVERY")
+TOPOLOGY_INSTALLED=$(shell_quote "$( [ "$NODE_MODE" = "topology" ] && printf '%s' "$INSTALL_DIR/topology.json" )")
 EOF
 chmod 0600 "$INSTALL_DIR/env"
 
@@ -422,6 +514,8 @@ APP="/opt/mini-sb-agent/mini-sb-agent"
 CONFIG="/opt/mini-sb-agent/config.json"
 . /opt/mini-sb-agent/env
 [ -s "$CONFIG" ] && exit 0
+# 拓扑模式：config 由 agent 启动时根据 topology.json 自动生成，无需预生成
+[ -n "${TOPOLOGY_INSTALLED:-}" ] && exit 0
 set -- xboard-generate-config \
   --panel-url "$PANEL_URL" \
   --panel-token "$PANEL_TOKEN" \
@@ -445,19 +539,34 @@ APP="/opt/mini-sb-agent/mini-sb-agent"
 CONFIG="/opt/mini-sb-agent/config.json"
 API="unix:/run/mini-sb-agent/stats.sock"
 . /opt/mini-sb-agent/env
-export GOMAXPROCS GOMEMLIMIT GOGC
-SYNC_NODE_TYPE="$PANEL_NODE_TYPE"
-set -- \
-  -config "$CONFIG" \
-  -api "$API" \
-  -panel-url "$PANEL_URL" \
-  -panel-token "$PANEL_TOKEN" \
-  -panel-node-id "$PANEL_NODE_ID" \
-  -panel-node-type "$SYNC_NODE_TYPE" \
-  -panel-every "$PANEL_EVERY" \
-  -node-rate-mbps "$NODE_RATE_MBPS"
-if [ "${NODE_MODE:-vless}" = "both" ]; then
-  set -- "$@" -panel-hy2-node-id "$HY2_NODE_ID" -panel-hy2-node-type hysteria
+export GOMAXPROCS GOMEMLIMIT GOGC GODEBUG
+if [ -n "${TOPOLOGY_INSTALLED:-}" ]; then
+  # 多节点拓扑模式：config 由 agent 启动时按 topology.json 自动生成
+  set -- \
+    -config "$CONFIG" \
+    -api "$API" \
+    -panel-url "$PANEL_URL" \
+    -panel-token "$PANEL_TOKEN" \
+    -panel-every "$PANEL_EVERY" \
+    -topology "$TOPOLOGY_INSTALLED" \
+    -node-rate-mbps "$NODE_RATE_MBPS"
+else
+  SYNC_NODE_TYPE="$PANEL_NODE_TYPE"
+  set -- \
+    -config "$CONFIG" \
+    -api "$API" \
+    -panel-url "$PANEL_URL" \
+    -panel-token "$PANEL_TOKEN" \
+    -panel-node-id "$PANEL_NODE_ID" \
+    -panel-node-type "$SYNC_NODE_TYPE" \
+    -panel-every "$PANEL_EVERY" \
+    -node-rate-mbps "$NODE_RATE_MBPS"
+  if [ "${NODE_MODE:-vless}" = "both" ]; then
+    set -- "$@" -panel-hy2-node-id "$HY2_NODE_ID" -panel-hy2-node-type hysteria
+  fi
+fi
+if [ "${SCAVENGE_EVERY:-0}" != "0" ] && [ -n "${SCAVENGE_EVERY:-}" ]; then
+  set -- "$@" -scavenge-every "$SCAVENGE_EVERY"
 fi
 if [ "${HY2_UP_MBPS:-0}" != "0" ]; then
   set -- "$@" -hy2-up-mbps "$HY2_UP_MBPS"
@@ -485,6 +594,8 @@ panel_node_id=$PANEL_NODE_ID
 panel_node_type=$PANEL_NODE_TYPE
 vless_node_id=$VLESS_NODE_ID
 hy2_node_id=$HY2_NODE_ID
+topology_file=$( [ "$NODE_MODE" = "topology" ] && printf '%s' "$INSTALL_DIR/topology.json" )
+topology_variant=$TOPOLOGY_VARIANT
 protocol=$PROTOCOL
 EOF
 chmod 0600 "$INSTALL_DIR/install.meta"
@@ -529,6 +640,7 @@ Type=simple
 Environment=GOMAXPROCS=$GOMAXPROCS
 Environment=GOMEMLIMIT=$GOMEMLIMIT
 Environment=GOGC=$GOGC
+Environment=GODEBUG=$GODEBUG
 RuntimeDirectory=mini-sb-agent
 ExecStartPre=/opt/mini-sb-agent/generate-config.sh
 ExecStart=/opt/mini-sb-agent/run.sh

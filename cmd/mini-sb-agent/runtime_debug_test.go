@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,9 @@ func TestRuntimeDebugLoggerWritesCSV(t *testing.T) {
 }
 
 func TestCollectRuntimeDebugSample(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("threads come from /proc/self/status, linux-only")
+	}
 	s := collectRuntimeDebugSample()
 	if s.pid <= 0 {
 		t.Fatalf("pid not populated: %+v", s)

@@ -198,6 +198,75 @@ func buildSingBoxConfigFromNode(cfg panelapi.NodeConfig, opts xboardGenerateOpti
 	return buildSingBoxConfigFromInbounds([]any{inbound})
 }
 
+// generateTopologyConfig builds a single sing-box process containing any number
+// of VLESS Reality / Hysteria2 inbounds. Each inbound gets a stable tag and an
+// inbound-matching route rule to its own direct or Shadowsocks outbound.
+func generateTopologyConfig(ctx context.Context, panelURL, panelToken string, topology panelapi.Topology, out, certPath, keyPath string) error {
+	if err := topology.Validate(); err != nil {
+		return err
+	}
+	var inbounds []any
+	outbounds := []any{
+		map[string]any{"type": "direct", "tag": "direct"},
+		map[string]any{"type": "block", "tag": "block"},
+		map[string]any{"type": "dns", "tag": "dns-out"},
+	}
+	var rules []any
+	for _, node := range topology.Nodes {
+		cfg, err := panelapi.NewClient(panelURL, panelToken, node.NodeID, node.PanelNodeType()).FetchNodeConfig(ctx)
+		if err != nil {
+			return fmt.Errorf("fetch node %s: %w", node.Key(), err)
+		}
+		if err := validateNodeProtocol(node, cfg); err != nil {
+			return err
+		}
+		nodeOpts := xboardGenerateOptions{Out: out, CertPath: certPath, KeyPath: keyPath}
+		if len(topology.Nodes) > 1 && normalizeNodeMode(node.NodeType) == "hy2" {
+			base := filepath.Dir(out)
+			nodeOpts.CertPath = filepath.Join(base, "cert-"+node.NodeID+".pem")
+			nodeOpts.KeyPath = filepath.Join(base, "key-"+node.NodeID+".pem")
+		}
+		inbound, err := inboundFromNodeConfig(cfg, nodeOpts, defaultListen(cfg.ListenIP))
+		if err != nil {
+			return fmt.Errorf("build node %s inbound: %w", node.Key(), err)
+		}
+		inbound["tag"] = node.InboundTag()
+		inbounds = append(inbounds, inbound)
+
+		outTag := node.OutboundTag()
+		switch strings.ToLower(strings.TrimSpace(node.Outbound.Type)) {
+		case "direct":
+			outTag = "direct"
+		case "shadowsocks", "ss":
+			outbounds = append(outbounds, outboundFromNodeSpec(node))
+		}
+		rules = append(rules, map[string]any{"inbound": []string{node.InboundTag()}, "outbound": outTag})
+	}
+	root := map[string]any{
+		"log":       map[string]any{"level": "warn", "timestamp": true},
+		"inbounds":  inbounds,
+		"outbounds": outbounds,
+		"route":     map[string]any{"rules": rules, "final": "block"},
+	}
+	data, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(out), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(out, data, 0600)
+}
+
+func outboundFromNodeSpec(node panelapi.NodeSpec) map[string]any {
+	return map[string]any{
+		"type": "shadowsocks", "tag": node.OutboundTag(),
+		"server": node.Outbound.Server, "server_port": node.Outbound.ServerPort,
+		"method": node.Outbound.Method, "password": node.Outbound.Password,
+		"plugin": node.Outbound.Plugin, "plugin_opts": node.Outbound.PluginOpts,
+	}
+}
+
 func inboundFromNodeConfig(cfg panelapi.NodeConfig, opts xboardGenerateOptions, listen string) (map[string]any, error) {
 	switch strings.ToLower(cfg.Protocol) {
 	case "vless":
@@ -363,4 +432,21 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func validateNodeProtocol(node panelapi.NodeSpec, cfg panelapi.NodeConfig) error {
+	norm := func(p string) string {
+		switch strings.ToLower(strings.TrimSpace(p)) {
+		case "vless", "vless-reality", "reality":
+			return "vless"
+		case "hy2", "hysteria", "hysteria2":
+			return "hysteria"
+		default:
+			return strings.ToLower(strings.TrimSpace(p))
+		}
+	}
+	if norm(node.NodeType) != norm(cfg.Protocol) {
+		return fmt.Errorf("node %s protocol mismatch: topology specifies %q but panel returned %q", node.NodeID, node.NodeType, cfg.Protocol)
+	}
+	return nil
 }

@@ -1,3 +1,5 @@
+//go:build !minimal || (with_vless && with_hysteria2)
+
 package main
 
 import (

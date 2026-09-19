@@ -1,0 +1,14 @@
+{
+  "log": {"level": "info", "timestamp": true},
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "proxy-out",
+      "server": "127.0.0.1",
+      "server_port": 443,
+      "uuid": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "route": {"final": "proxy-out"}
+}

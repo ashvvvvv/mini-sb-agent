@@ -1,0 +1,13 @@
+{
+  "log": {"level": "info", "timestamp": true},
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "socks",
+      "tag": "proxy-out",
+      "server": "127.0.0.1",
+      "server_port": 1080
+    }
+  ],
+  "route": {"final": "proxy-out"}
+}

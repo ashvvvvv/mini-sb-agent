@@ -1,23 +1,21 @@
 package panelapi
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type Client struct {
-	BaseURL  string
-	Token    string
-	NodeID   string
-	NodeType string
-	HTTP     *http.Client
+	BaseURL    string
+	Token      string
+	NodeID     string
+	NodeType   string
+	InboundTag string
+	HTTP       minHTTPClient
 }
 
 func NewClient(baseURL, token, nodeID, nodeType string) *Client {
@@ -26,10 +24,14 @@ func NewClient(baseURL, token, nodeID, nodeType string) *Client {
 		Token:    token,
 		NodeID:   nodeID,
 		NodeType: nodeType,
-		HTTP: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		HTTP:     minHTTPClient{Timeout: minHTTPTimeout},
 	}
+}
+
+func NewNodeClient(baseURL, token string, node NodeSpec) *Client {
+	client := NewClient(baseURL, token, node.NodeID, node.PanelNodeType())
+	client.InboundTag = node.InboundTag()
+	return client
 }
 
 func (c *Client) endpoint(path string) (string, error) {
@@ -59,20 +61,15 @@ func (c *Client) FetchUsers(ctx context.Context) ([]User, error) {
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ep, nil)
+	resp, err := c.HTTP.do(ctx, "GET", ep, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("panel api user status %s", resp.Status)
 	}
 	var list UserList
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+	if err := json.Unmarshal(resp.Body, &list); err != nil {
 		return nil, err
 	}
 	users := list.Users
@@ -95,6 +92,9 @@ func (c *Client) FetchUsers(ctx context.Context) ([]User, error) {
 }
 
 func (c *Client) matchesInbound(tag string) bool {
+	if c.InboundTag != "" {
+		return tag == c.InboundTag
+	}
 	switch strings.ToLower(c.NodeType) {
 	case "vless", "vless-reality", "reality":
 		return tag == "vless-in"
@@ -139,20 +139,14 @@ func (c *Client) PushTraffic(ctx context.Context, delta map[string]map[string][2
 	if len(payload) == 0 {
 		return nil
 	}
-	var body bytes.Buffer
-	if err := json.NewEncoder(&body).Encode(payload); err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ep, &body)
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.HTTP.do(ctx, "POST", ep, map[string]string{"Content-Type": "application/json"}, body)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("panel api push status %s", resp.Status)
 	}

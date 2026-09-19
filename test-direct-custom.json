@@ -1,0 +1,13 @@
+{
+  "log": {"level": "info", "timestamp": true},
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "custom-direct",
+      "bind_interface": "lo",
+      "inet4_bind_address": "127.0.0.1"
+    }
+  ],
+  "route": {"final": "custom-direct"}
+}

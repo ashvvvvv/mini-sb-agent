@@ -1,3 +1,5 @@
+//go:build with_vless || !minimal
+
 package main
 
 import (
