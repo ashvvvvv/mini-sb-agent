@@ -31,18 +31,35 @@ type Usage struct {
 	Download int64 `json:"download"`
 }
 
+// usageKey identifies one accounted (agent, node, user) triple. A comparable
+// struct key cannot collide the way ":"-joined strings can: agent ids and
+// node ids may legally contain colons, so ("edge", "vless:hysteria:21") and
+// ("edge:vless", "hysteria:21") must stay distinct accounts.
+type usageKey struct {
+	agentID string
+	nodeKey string
+	userID  int
+}
+
+// batchKey identifies one agent's idempotency batch. Struct key for the same
+// colon-collision reason as usageKey; it also avoids the join allocation.
+type batchKey struct {
+	agentID string
+	batchID string
+}
+
 type Store struct {
 	mu         sync.RWMutex
 	agents     map[string]Agent
 	topologies map[string]TopologyRecord
-	usage      map[string]Usage
-	batches    map[string]struct{}
+	usage      map[usageKey]Usage
+	batches    map[batchKey]struct{}
 }
 
 func NewStore(_ string) *Store {
 	return &Store{
 		agents: map[string]Agent{}, topologies: map[string]TopologyRecord{},
-		usage: map[string]Usage{}, batches: map[string]struct{}{},
+		usage: map[usageKey]Usage{}, batches: map[batchKey]struct{}{},
 	}
 }
 
@@ -106,11 +123,14 @@ func (s *Store) Topology(agentID string) (TopologyRecord, bool) {
 	v, ok := s.topologies[agentID]
 	return v, ok
 }
-func usageKey(nodeID string, userID int) string { return fmt.Sprintf("%s:%d", nodeID, userID) }
-func (s *Store) Usage(nodeID string, userID int) Usage {
+// Usage returns the traffic accounted for one agent's node and user. The
+// identity includes the agent and the full node key (normalized protocol plus
+// node id), so equal node ids across agents or protocols never share an
+// account.
+func (s *Store) Usage(agentID, nodeType, nodeID string, userID int) Usage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.usage[usageKey(nodeID, userID)]
+	return s.usage[usageKey{agentID: agentID, nodeKey: panelapi.NodeKey(nodeType, nodeID), userID: userID}]
 }
 
 func (s *Store) ApplyTraffic(agentID string, payload panelapi.TrafficPushRequest) (bool, error) {
@@ -122,21 +142,40 @@ func (s *Store) ApplyTraffic(agentID string, payload panelapi.TrafficPushRequest
 	if _, ok := s.agents[agentID]; !ok {
 		return false, fmt.Errorf("agent not found")
 	}
-	key := agentID + ":" + payload.BatchID
-	if _, duplicate := s.batches[key]; duplicate {
+	bk := batchKey{agentID: agentID, batchID: payload.BatchID}
+	if _, duplicate := s.batches[bk]; duplicate {
 		return false, nil
 	}
+	// Validate the whole batch before touching any counter: a rejected batch
+	// must leave usage unchanged, and every item must identify, with its full
+	// node identity (node_type + node_id), a node assigned to this agent, so
+	// traffic can never be booked to another agent's node or to a protocol
+	// the agent does not run on that node id.
+	record, ok := s.topologies[agentID]
+	if !ok {
+		return false, fmt.Errorf("agent %q has no assigned topology", agentID)
+	}
+	owned := make(map[string]bool, len(record.Topology.Nodes))
+	for _, node := range record.Topology.Nodes {
+		owned[node.Key()] = true
+	}
 	for _, item := range payload.Items {
-		if item.NodeID == "" || item.UserID <= 0 || item.Upload < 0 || item.Download < 0 {
+		if item.NodeID == "" || item.NodeType == "" || item.UserID <= 0 || item.Upload < 0 || item.Download < 0 {
 			return false, fmt.Errorf("invalid traffic item")
 		}
-		key := usageKey(item.NodeID, item.UserID)
-		old := s.usage[key]
+		nodeKey := panelapi.NodeKey(item.NodeType, item.NodeID)
+		if !owned[nodeKey] {
+			return false, fmt.Errorf("node %q of type %q is not assigned to agent %q", item.NodeID, item.NodeType, agentID)
+		}
+	}
+	for _, item := range payload.Items {
+		k := usageKey{agentID: agentID, nodeKey: panelapi.NodeKey(item.NodeType, item.NodeID), userID: item.UserID}
+		old := s.usage[k]
 		old.Upload += item.Upload
 		old.Download += item.Download
-		s.usage[key] = old
+		s.usage[k] = old
 	}
-	s.batches[key] = struct{}{}
+	s.batches[bk] = struct{}{}
 	agent := s.agents[agentID]
 	agent.SeenAt = time.Now().UTC()
 	s.agents[agentID] = agent

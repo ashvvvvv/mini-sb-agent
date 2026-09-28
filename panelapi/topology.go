@@ -71,8 +71,16 @@ func validateNodeID(id string) error {
 	return nil
 }
 
+// NodeKey returns the normalized identity of one node: normalized protocol
+// plus node id. Two nodes are the same node only when both parts match, so
+// vless:21 and hysteria:21 stay distinct even when they share an id, and the
+// same key under two agents is still two accounts.
+func NodeKey(nodeType, nodeID string) string {
+	return normalizeNodeType(nodeType) + ":" + strings.TrimSpace(nodeID)
+}
+
 func (n NodeSpec) Key() string {
-	return normalizeNodeType(n.NodeType) + ":" + strings.TrimSpace(n.NodeID)
+	return NodeKey(n.NodeType, n.NodeID)
 }
 
 func (n NodeSpec) InboundTag() string {

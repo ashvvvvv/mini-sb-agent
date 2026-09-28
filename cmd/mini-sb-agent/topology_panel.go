@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"mini-sb-agent/panelapi"
@@ -44,13 +45,23 @@ func (p *topologyPanel) FetchUsers(ctx context.Context) ([]panelapi.User, error)
 	return merged, nil
 }
 
-func (p *topologyPanel) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error {
+func (p *topologyPanel) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) (map[string]bool, error) {
+	// Push every node even when an earlier one fails: the acknowledged tags
+	// let the Syncer commit the confirmed nodes, so a retry re-sends only the
+	// failed ones instead of re-billing nodes the panel already counted.
+	acked := make(map[string]bool, len(p.clients))
+	var errs []error
 	for i, client := range p.clients {
-		if err := client.PushTraffic(ctx, delta); err != nil {
-			return fmt.Errorf("push traffic for %s: %w", p.nodes[i].Key(), err)
+		if _, err := client.PushTraffic(ctx, delta); err != nil {
+			errs = append(errs, fmt.Errorf("push traffic for %s: %w", p.nodes[i].Key(), err))
+			continue
 		}
+		acked[p.nodes[i].InboundTag()] = true
 	}
-	return nil
+	if len(errs) > 0 {
+		return acked, errors.Join(errs...)
+	}
+	return acked, nil
 }
 
 func mergeUsersByNode(usersByNode map[string][]panelapi.User) ([]panelapi.User, error) {

@@ -24,6 +24,7 @@ type TopologyResponse struct {
 
 type TrafficItem struct {
 	NodeID   string `json:"node_id"`
+	NodeType string `json:"node_type"`
 	UserID   int    `json:"user_id"`
 	Upload   int64  `json:"upload"`
 	Download int64  `json:"download"`
@@ -97,13 +98,20 @@ func (c *ControlPlaneClient) FetchTopology(ctx context.Context, etag string) (To
 }
 
 // PushTraffic is safe to retry only when BatchID remains stable. The panel must
-// persist Idempotency-Key values before applying counters.
+// persist Idempotency-Key values before applying counters. Every item must
+// carry its full node identity (node_id and node_type): the panel books usage
+// per agent + node identity, so a bare node id is ambiguous.
 func (c *ControlPlaneClient) PushTraffic(ctx context.Context, payload TrafficPushRequest) error {
 	if strings.TrimSpace(payload.BatchID) == "" {
 		return fmt.Errorf("traffic batch_id is empty")
 	}
 	if len(payload.Items) == 0 {
 		return nil
+	}
+	for _, item := range payload.Items {
+		if strings.TrimSpace(item.NodeID) == "" || strings.TrimSpace(item.NodeType) == "" {
+			return fmt.Errorf("traffic item for user %d requires node_id and node_type", item.UserID)
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

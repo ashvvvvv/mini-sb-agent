@@ -105,12 +105,14 @@ func (c *Client) matchesInbound(tag string) bool {
 	}
 }
 
-func (c *Client) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error {
+func (c *Client) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) (map[string]bool, error) {
 	flat := make(map[string][2]int64)
+	acked := make(map[string]bool)
 	for tag, users := range delta {
 		if !c.matchesInbound(tag) {
 			continue
 		}
+		acked[tag] = true
 		for user, d := range users {
 			if !isNumericUser(user) {
 				continue
@@ -122,11 +124,11 @@ func (c *Client) PushTraffic(ctx context.Context, delta map[string]map[string][2
 		}
 	}
 	if len(flat) == 0 {
-		return nil
+		return acked, nil
 	}
 	ep, err := c.endpoint("/api/v1/server/UniProxy/push")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	payload := make(PushRequest, len(flat))
 	for user, d := range flat {
@@ -137,18 +139,18 @@ func (c *Client) PushTraffic(ctx context.Context, delta map[string]map[string][2
 		payload[uid] = []int64{d[0], d[1]}
 	}
 	if len(payload) == 0 {
-		return nil
+		return acked, nil
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := c.HTTP.do(ctx, "POST", ep, map[string]string{"Content-Type": "application/json"}, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("panel api push status %s", resp.Status)
+		return nil, fmt.Errorf("panel api push status %s", resp.Status)
 	}
-	return nil
+	return acked, nil
 }

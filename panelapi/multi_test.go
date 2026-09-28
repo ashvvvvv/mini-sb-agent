@@ -19,9 +19,16 @@ func (f *fakePanel) FetchUsers(ctx context.Context) ([]User, error) {
 	return f.users, nil
 }
 
-func (f *fakePanel) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error {
+func (f *fakePanel) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) (map[string]bool, error) {
 	f.push++
-	return f.err
+	if f.err != nil {
+		return nil, f.err
+	}
+	acked := make(map[string]bool, len(delta))
+	for tag := range delta {
+		acked[tag] = true
+	}
+	return acked, nil
 }
 
 func TestMultiPanelMergesUsersAndDeduplicatesByID(t *testing.T) {
@@ -42,11 +49,27 @@ func TestMultiPanelPushesTrafficToAllPanels(t *testing.T) {
 	a := &fakePanel{}
 	b := &fakePanel{}
 	panel := MultiPanel{Panels: []Panel{a, b}}
-	if err := panel.PushTraffic(context.Background(), map[string]map[string][2]int64{"vless-in": {"1": {1, 2}}}); err != nil {
+	if _, err := panel.PushTraffic(context.Background(), map[string]map[string][2]int64{"vless-in": {"1": {1, 2}}}); err != nil {
 		t.Fatalf("PushTraffic: %v", err)
 	}
 	if a.push != 1 || b.push != 1 {
 		t.Fatalf("push counts = %d/%d", a.push, b.push)
+	}
+}
+
+func TestMultiPanelPushesRemainingPanelsAndReportsAckedOnError(t *testing.T) {
+	failing := &fakePanel{err: errors.New("boom")}
+	healthy := &fakePanel{}
+	panel := MultiPanel{Panels: []Panel{failing, healthy}}
+	acked, err := panel.PushTraffic(context.Background(), map[string]map[string][2]int64{"vless-in": {"1": {1, 2}}})
+	if err == nil {
+		t.Fatal("PushTraffic error = nil")
+	}
+	if healthy.push != 1 {
+		t.Fatalf("healthy panel push count = %d, want 1", healthy.push)
+	}
+	if !acked["vless-in"] {
+		t.Fatalf("acked tags = %#v, want vless-in", acked)
 	}
 }
 

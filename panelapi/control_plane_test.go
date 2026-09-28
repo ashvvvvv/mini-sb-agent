@@ -64,12 +64,33 @@ func TestControlPlanePushTrafficSendsIdempotencyKey(t *testing.T) {
 	client := NewControlPlaneClient(server.URL, "secret", "edge-a")
 	err := client.PushTraffic(t.Context(), TrafficPushRequest{
 		BatchID: "batch-1",
-		Items:   []TrafficItem{{NodeID: "42", UserID: 9, Upload: 100, Download: 200}},
+		Items:   []TrafficItem{{NodeID: "42", NodeType: "vless", UserID: 9, Upload: 100, Download: 200}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotKey != "batch-1" || !strings.Contains(body, `"node_id":"42"`) || !strings.Contains(body, `"download":200`) {
+	if gotKey != "batch-1" || !strings.Contains(body, `"node_id":"42"`) || !strings.Contains(body, `"node_type":"vless"`) || !strings.Contains(body, `"download":200`) {
 		t.Fatalf("key=%q body=%s", gotKey, body)
+	}
+}
+
+func TestControlPlanePushTrafficRequiresNodeIdentity(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	client := NewControlPlaneClient(server.URL, "secret", "edge-a")
+	err := client.PushTraffic(t.Context(), TrafficPushRequest{
+		BatchID: "batch-1",
+		Items:   []TrafficItem{{NodeID: "42", UserID: 9, Upload: 100}},
+	})
+	if err == nil {
+		t.Fatal("item without node_type must be rejected before sending")
+	}
+	if requests != 0 {
+		t.Fatalf("malformed payload reached the panel: %d requests", requests)
 	}
 }

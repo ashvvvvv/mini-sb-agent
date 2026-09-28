@@ -66,15 +66,18 @@ func TestTrafficIdempotencyPreventsDoubleCounting(t *testing.T) {
 	if err := store.PutAgent(Agent{ID: "edge-a", Secret: "agent-secret"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.PutTopology("edge-a", panelapi.Topology{Nodes: []panelapi.NodeSpec{{NodeID: "42", NodeType: "vless", Outbound: panelapi.OutboundSpec{Type: "direct"}}}}); err != nil {
+		t.Fatal(err)
+	}
 	h := New("admin-secret", store)
-	payload := panelapi.TrafficPushRequest{BatchID: "batch-1", Items: []panelapi.TrafficItem{{NodeID: "42", UserID: 7, Upload: 10, Download: 20}}}
+	payload := panelapi.TrafficPushRequest{BatchID: "batch-1", Items: []panelapi.TrafficItem{{NodeID: "42", NodeType: "vless", UserID: 7, Upload: 10, Download: 20}}}
 	for range 2 {
 		w := request(t, h, http.MethodPost, "/api/v2/agent/traffic", "agent-secret", payload)
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("traffic code=%d body=%s", w.Code, w.Body.String())
 		}
 	}
-	usage := store.Usage("42", 7)
+	usage := store.Usage("edge-a", "vless", "42", 7)
 	if usage.Upload != 10 || usage.Download != 20 {
 		t.Fatalf("usage=%+v", usage)
 	}

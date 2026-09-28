@@ -45,11 +45,16 @@ func (l LocalUsers) FetchUsers(ctx context.Context) ([]User, error) {
 	return ParseUsers(data)
 }
 
-func (l LocalUsers) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error {
-	return nil
+func (l LocalUsers) PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) (map[string]bool, error) {
+	// Local mode has no panel to account traffic to; success keeps the
+	// counters committed so unreported deltas do not accumulate.
+	return nil, nil
 }
 
 type Panel interface {
 	FetchUsers(ctx context.Context) ([]User, error)
-	PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) error
+	// PushTraffic returns the inbound tags whose delta the panel accepted.
+	// On error the caller must commit only the acknowledged tags, so failed
+	// nodes are retried without re-billing the already confirmed ones.
+	PushTraffic(ctx context.Context, delta map[string]map[string][2]int64) (acked map[string]bool, err error)
 }

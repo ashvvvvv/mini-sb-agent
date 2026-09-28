@@ -198,10 +198,14 @@ func (m *UserManager) applyGlobal(users []panelapi.User) error {
 }
 
 func (m *UserManager) updateLimiterLocked(u panelapi.User) {
-	if !userRateLimitBuildEnabled || u.SpeedLimit <= 0 {
-		m.closeLimiterLocked(u.ID)
+	if !userRateLimitBuildEnabled {
 		return
 	}
+	// Keep one stable limiter pair per active user even when the limit is 0:
+	// live connections hold these pointers, and SetRate(0) disables limiting
+	// without breaking them, while a later SetRate(>0) starts limiting
+	// connections that were opened while the user was unlimited. Limiters
+	// are closed only when the user disappears from the active set.
 	bytesPerSecond := mbpsToBytes(u.SpeedLimit)
 	if l, ok := m.limiters[u.ID]; ok {
 		l.SetRate(bytesPerSecond)

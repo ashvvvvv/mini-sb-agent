@@ -328,6 +328,27 @@ func readHTTPRequest(conn net.Conn) (httpRequestLine, error) {
 	return httpRequestLine{target: fields[1]}, nil
 }
 
+// newPanelUsersCallback builds the Syncer.Users callback. In topology mode
+// users are already applied per inbound by topologyPanel.FetchUsers; the
+// callback only prunes stale stats, because re-applying the merged list with
+// ApplyBox would put node A's users onto node B and break node isolation.
+// The shared-list ApplyBox path stays for legacy single/dual-node mode.
+func newPanelUsersCallback(topologyMode bool, users *UserManager, hook *Hook, inbounds func() map[string]adapter.Inbound) func([]panelapi.User) error {
+	if topologyMode {
+		return func([]panelapi.User) error {
+			hook.RemoveAbsent(users.ActiveIDs())
+			return nil
+		}
+	}
+	return func(list []panelapi.User) error {
+		if err := users.ApplyBox(inbounds(), list); err != nil {
+			return err
+		}
+		hook.RemoveAbsent(users.ActiveIDs())
+		return nil
+	}
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -469,25 +490,35 @@ func main() {
 	} else if *users != "" {
 		panel = panelapi.LocalUsers{Path: *users}
 	}
+	var syncer *panelapi.Syncer
+	var syncerDone <-chan struct{}
 	if panel != nil {
-		syncer := &panelapi.Syncer{
+		syncer = &panelapi.Syncer{
 			Panel:    panel,
 			Snapshot: h.SnapshotDelta,
 			Commit:   h.CommitSnapshot,
-			Users: func(list []panelapi.User) error {
-				if err := userManager.ApplyBox(collectInbounds(b), list); err != nil {
-					return err
-				}
-				h.RemoveAbsent(userManager.ActiveIDs())
-				return nil
-			},
-			Every: *panelEvery,
+			Users:    newPanelUsersCallback(*topologyPath != "", userManager, h, func() map[string]adapter.Inbound { return collectInbounds(b) }),
+			Every:    *panelEvery,
 		}
-		go syncer.Run(ctx)
+		syncerDone = syncer.Start(ctx)
 	}
 
 	<-ctx.Done()
+	// Wait for the periodic sync goroutine to fully return before closing
+	// the box: an in-flight user application (ApplyBox/ApplyBoxByInbound)
+	// must never race the box shutdown. Run's exit is bounded by the panel
+	// HTTP deadlines.
+	if syncerDone != nil {
+		<-syncerDone
+	}
+	// Close the data path so the final snapshot includes the last bytes of
+	// every connection, then push the remaining traffic before exiting.
 	if err := b.Close(); err != nil {
 		log.Println(err)
+	}
+	if syncer != nil {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		syncer.FinalFlush(flushCtx)
+		cancel()
 	}
 }
