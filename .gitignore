@@ -4,3 +4,4 @@ builds/
 # local build artifacts
 *.exe
 build/
+AGENTS.md

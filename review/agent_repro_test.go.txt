@@ -1,0 +1,45 @@
+package main
+
+import (
+ "context"
+ "net/http"
+ "net/http/httptest"
+ "testing"
+ "mini-sb-agent/panelapi"
+ "github.com/sagernet/sing-box/adapter"
+)
+
+func TestReviewTopologySyncIsolation(t *testing.T) {
+ srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  if r.URL.Query().Get("node_id")=="21" { w.Write([]byte(`{"users":[{"id":1,"uuid":"u1"}]}`)) } else { w.Write([]byte(`{"users":[{"id":2,"uuid":"u2"}]}`)) }
+ }))
+ defer srv.Close()
+ nodes:=[]panelapi.NodeSpec{{NodeID:"21",NodeType:"vless"},{NodeID:"22",NodeType:"vless"}}
+ m:=NewUserManager(0)
+ in:=map[string]adapter.Inbound{nodes[0].InboundTag():nil,nodes[1].InboundTag():nil}
+ p:=newTopologyPanel(srv.URL,"",nodes,func(by map[string][]panelapi.User)error{return m.ApplyBoxByInbound(in,groupNodeUsers(nodes,by))})
+ merged,err:=p.FetchUsers(context.Background());if err!=nil{t.Fatal(err)}
+ if err=m.ApplyBox(in,merged);err!=nil{t.Fatal(err)} // main.go Syncer.Users callback
+ if got:=len(m.InboundSnapshot(nodes[0].InboundTag()));got!=1{t.Fatalf("node 21 now has %d users; expected only its own user",got)}
+}
+
+func TestReviewPartialTrafficRetry(t *testing.T){
+ total:=0; fail:=true
+ srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  if r.URL.Query().Get("node_id")=="21"{total+=100;w.WriteHeader(200)}else if fail{w.WriteHeader(500)}else{w.WriteHeader(200)}
+ }));defer srv.Close()
+ p:=newTopologyPanel(srv.URL,"",[]panelapi.NodeSpec{{NodeID:"21",NodeType:"vless"},{NodeID:"22",NodeType:"vless"}},nil)
+ delta:=map[string]map[string][2]int64{"vless-21-in":{"1":{100,0}},"vless-22-in":{"2":{100,0}}}
+ if p.PushTraffic(context.Background(),delta)==nil{t.Fatal("expected second node failure")}
+ fail=false
+ if err:=p.PushTraffic(context.Background(),delta);err!=nil{t.Fatal(err)}
+ if total!=100{t.Fatalf("node 21 billed %d bytes for 100 bytes",total)}
+}
+
+func TestReviewRemovingSpeedLimitKeepsConnectionUsable(t *testing.T){
+ m:=NewUserManager(0)
+ m.ApplyBox(nil,[]panelapi.User{{ID:1,UUID:"u1",SpeedLimit:1}})
+ _,lim:=m.Limiters("u1")
+ m.ApplyBox(nil,[]panelapi.User{{ID:1,UUID:"u1",SpeedLimit:0}})
+ if err:=lim.Wait(1);err!=nil{t.Fatalf("existing connection fails after removing limit: %v",err)}
+}

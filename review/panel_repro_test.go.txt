@@ -1,0 +1,17 @@
+package panelserver
+
+import("testing";"mini-sb-agent/panelapi")
+
+func TestReviewRejectedTrafficIsAtomic(t *testing.T){
+ s:=NewStore("");s.PutAgent(Agent{ID:"a",Secret:"s"})
+ payload:=panelapi.TrafficPushRequest{BatchID:"b",Items:[]panelapi.TrafficItem{{NodeID:"21",UserID:1,Upload:100},{NodeID:"21",UserID:2,Upload:-1}}}
+ if _,err:=s.ApplyTraffic("a",payload);err==nil{t.Fatal("expected rejection")}
+ if got:=s.Usage("21",1).Upload;got!=0{t.Fatalf("rejected batch still booked %d bytes",got)}
+}
+
+func TestReviewTrafficNodeOwnership(t *testing.T){
+ s:=NewStore("");s.PutAgent(Agent{ID:"a",Secret:"s"})
+ s.PutTopology("a",panelapi.Topology{Nodes:[]panelapi.NodeSpec{{NodeID:"21",NodeType:"vless",Outbound:panelapi.OutboundSpec{Type:"direct"}}}})
+ _,err:=s.ApplyTraffic("a",panelapi.TrafficPushRequest{BatchID:"b",Items:[]panelapi.TrafficItem{{NodeID:"other-agents-node",UserID:1,Upload:100}}})
+ if err==nil{t.Fatal("agent can book traffic to a node outside its assigned topology")}
+}
